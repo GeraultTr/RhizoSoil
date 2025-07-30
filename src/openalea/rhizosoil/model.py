@@ -1,5 +1,3 @@
-import wheat_bridges
-
 # Soil model
 from root_bridges.soil_model import SoilModel
 
