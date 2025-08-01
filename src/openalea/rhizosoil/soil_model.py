@@ -9,12 +9,12 @@ from openalea.metafspm.component import Model, declare
 
 
 @dataclass
-class RhizoSoil(Model):
+class SoilModel(Model):
     """
     Empty doc
     """
 
-    # --- INPUTS STATE VARIABLES FROM OTHER COMPONENTS : default values are provided if not superimposed by model coupling ---
+    # --- @note INPUTS STATE VARIABLES FROM OTHER COMPONENTS : default values are provided if not superimposed by model coupling ---
 
     # FROM CARBON MODEL
     hexose_exudation: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
@@ -88,7 +88,7 @@ class RhizoSoil(Model):
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="state_variable", by="meteo", state_variable_type="extensive", edit_by="user")
 
-    # --- STATE VARIABLES INITIALIZATION ---
+    # --- @note STATE VARIABLES INITIALIZATION ---
     # Intersection with roots
     voxel_neighbor: int = declare(default=None, unit="adim", unit_comment="", description="",
                                                  value_comment="", references="", DOI="",
@@ -182,7 +182,7 @@ class RhizoSoil(Model):
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
     
-    # --- RATES INITIALIZATION ---
+    # --- @note RATES INITIALIZATION ---
     # In-voxel rates
     microbial_activity: float = declare(default=0., unit="adim", unit_comment="", description="microbial degradation activity indicator depending on microbial activity locally", 
                                         value_comment="", references="", DOI="",
@@ -226,7 +226,7 @@ class RhizoSoil(Model):
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
 
-    # --- PARAMETERS ---
+    # --- @note PARAMETERS ---
 
     # C related
     k_POC: float = declare(default=0.5 / (3600 * 24 * 365), unit=".s-1", unit_comment="", description="", 
@@ -456,22 +456,22 @@ class RhizoSoil(Model):
     
 
 
-    def __init__(self, time_step_in_seconds, scene_xrange=1., scene_yrange=1., **scenario):
+    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., **scenario):
         """
         DESCRIPTION
         -----------
         __init__ method
 
         :param g: the root MTG
-        :param time_step_in_seconds: time step of the simulation (s)
+        :param time_step: time step of the simulation (s)
         :param scenario: mapping of existing variable initialization and parameters to superimpose.
         :return:
         """
 
         self.apply_scenario(**scenario)
         self.initiate_voxel_soil(scene_xrange, scene_yrange)
-        self.time_step_in_seconds = time_step_in_seconds
-        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step_in_seconds, data=self.voxels, compartment="soil")   
+        self.time_step = time_step
+        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")   
 
 
     # SERVICE FUNCTIONS
@@ -559,7 +559,7 @@ class RhizoSoil(Model):
                 solute_string += ' '
 
         self.cmf_project = cmf.project(solute_string)
-        nitrate, carbon = self.cmf_project.solutes
+        nitrate , _ , _ = self.cmf_project.solutes
 
         # Retention curve with soil parameters
         self.r_curve=cmf.VanGenuchtenMualem(Ksat=self.saturated_hydraulic_conductivity, # m.day-1
@@ -633,10 +633,10 @@ class RhizoSoil(Model):
                 self.rainfall_nodes[self.cmf_id_grid[ix, iy]] = rs
 
                 for iz, l in enumerate(cell.layers):
-                    l.theta = self.voxels["soil_moisture"][ix, iy, iz]
-                    l.potential = self.r_curve.MatricPotential(self.voxels["water_potential_soil"][ix, iy, iz]) # Must be initialized
+                    l.theta = self.voxels["soil_moisture"][iy, iz, ix]
+                    l.potential = self.r_curve.MatricPotential(l.theta) # Must be initialized
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        l.conc(solute, volumic_concentrations[solute_name][ix, iy, iz])
+                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
             
             # Groundwater table boundary condition 
             self.ground_water_theta = 0.1 # TODO : add as a varying input
@@ -812,7 +812,7 @@ class RhizoSoil(Model):
     
     # MODEL EQUATIONS
 
-    # RATES
+    # @note RATES
 
     @potential
     @rate
@@ -947,10 +947,10 @@ class RhizoSoil(Model):
 
                 for iz, l in enumerate(cell.layers):
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        l.conc(solute, volumic_concentrations[solute_name][ix, iy, iz])
+                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
 
         # Even for a single time_step, solver needs to iterate to actually run on its own
-        [t for t in self.cmf_solver.run(self.cmf_solver.t, self.cmf_solver.t + cmf.h * self.time_step_in_seconds/3600, cmf.h * self.time_step_in_seconds/3600)]
+        [t for t in self.cmf_solver.run(self.cmf_solver.t, self.cmf_solver.t + cmf.h * self.time_step/3600, cmf.h * self.time_step/3600)]
 
         # 7. Extract results as NumPy arrays
         # TODO : optimization only because this already runs well, but in theory, accessing arrays through indices is highly unefficient and cmf fully with arrays would be better, but didn't find how to do it yet
@@ -958,10 +958,10 @@ class RhizoSoil(Model):
             for iy in range(self.voxel_number_y):
                 cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
                 for iz, l in enumerate(cell.layers):
-                    self.voxels["soil_moisture"][ix, iy, iz] = l.theta
-                    self.voxels["water_potential_soil"][ix, iy, iz] = (l.potential - l.position[2]) * 1000 * 9.81 # Convert to Pa
+                    self.voxels["soil_moisture"][iy, iz, ix] = l.theta
+                    self.voxels["water_potential_soil"][iy, iz, ix] = (l.potential - l.position[2]) * 1000 * 9.81 # Convert to Pa
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        self.voxels[solute_name][ix, iy, iz] = l.conc(solute) * (self.voxels["soil_moisture"][ix, iy, iz] * self.voxels["voxel_volume"][ix, iy, iz]) / self.voxels["dry_soil_mass"][ix, iy, iz]
+                        self.voxels[solute_name][iy, iz, ix] = l.conc(solute) * (self.voxels["soil_moisture"][iy, iz, ix] * self.voxels["voxel_volume"][iy, iz, ix]) / self.voxels["dry_soil_mass"][iy, iz, ix]
                     
 
     #TP@actual
@@ -983,39 +983,39 @@ class RhizoSoil(Model):
         result[:, :, 1] = self.mineral_N_fertilization[1]
         return result
 
-    # STATES
+    # @note STATES
 
     #@state
     def _POC(self, POC, dry_soil_mass, degradation_POC, cells_release):
-        return POC + (self.time_step_in_seconds / dry_soil_mass) * (
+        return POC + (self.time_step / dry_soil_mass) * (
             cells_release
             - degradation_POC * dry_soil_mass
         )
     
     #@state
     def _PON(self, POC, dry_soil_mass, degradation_POC, cells_release):
-        return POC + (self.time_step_in_seconds / dry_soil_mass) * (
+        return POC + (self.time_step / dry_soil_mass) * (
             cells_release / self.CN_ratio_root_cells
             - degradation_POC *dry_soil_mass / self.CN_ratio_POM
         )
     
     #@state
     def _MAOC(self, MAOC, dry_soil_mass, degradation_microbial_OC, degradation_MAOC):
-        return MAOC + (self.time_step_in_seconds / dry_soil_mass) * (
+        return MAOC + (self.time_step / dry_soil_mass) * (
             degradation_microbial_OC * dry_soil_mass * self.microbial_proportion_of_MAOM
             - degradation_MAOC * dry_soil_mass
         )
     
     #@state
     def _MAON(self, MAON, dry_soil_mass, degradation_microbial_OC, degradation_MAOC):
-        return MAON + (self.time_step_in_seconds / dry_soil_mass) * (
+        return MAON + (self.time_step / dry_soil_mass) * (
             degradation_microbial_OC * dry_soil_mass * self.microbial_proportion_of_MAOM / self.CN_ratio_microbial_biomass
             - degradation_MAOC * dry_soil_mass / self.CN_ratio_MAOM
         )
 
     #@state
     def _DOC(self, DOC, dry_soil_mass, degradation_microbial_OC, degradation_DOC, hexose_exudation, phloem_hexose_exudation, mucilage_secretion, amino_acids_diffusion_from_roots,  amino_acids_diffusion_from_xylem, amino_acids_uptake, amino_acid_transport):
-        return DOC + (self.time_step_in_seconds / dry_soil_mass) * (
+        return DOC + (self.time_step / dry_soil_mass) * (
             degradation_microbial_OC * dry_soil_mass * (1 - self.microbial_proportion_of_MAOM)
             - degradation_DOC * dry_soil_mass
             + hexose_exudation
@@ -1029,7 +1029,7 @@ class RhizoSoil(Model):
     
     #@state
     def _DON(self, DON, DOC, dry_soil_mass, degradation_microbial_OC, degradation_DOC, amino_acids_diffusion_from_roots,  amino_acids_diffusion_from_xylem, amino_acids_uptake, amino_acid_transport):
-        return DON + (self.time_step_in_seconds / dry_soil_mass) * (
+        return DON + (self.time_step / dry_soil_mass) * (
             degradation_microbial_OC * dry_soil_mass * (1 - self.microbial_proportion_of_MAOM) / self.CN_ratio_microbial_biomass
             - degradation_DOC * dry_soil_mass * DON / DOC
             + (amino_acids_diffusion_from_roots
@@ -1044,7 +1044,7 @@ class RhizoSoil(Model):
         For microbial biomass C, the new concentrations results i) from the turnover of this pool, ii) from a fraction of
         the degradation products of each SOC pool, including microbial biomass itself, and iii) from new net inputs, if any:
         """
-        return microbial_C + (self.time_step_in_seconds / dry_soil_mass) * (
+        return microbial_C + (self.time_step / dry_soil_mass) * (
             - degradation_microbial_OC
             + degradation_POC * self.CUE_POC
             + degradation_MAOC * self.CUE_MAOC
@@ -1059,7 +1059,7 @@ class RhizoSoil(Model):
         the degradation products of each SOC pool, including microbial biomass itself, and iii) from new net inputs, if any:
         """
 
-        balance = microbial_N + (self.time_step_in_seconds / dry_soil_mass) * (
+        balance = microbial_N + (self.time_step / dry_soil_mass) * (
             - degradation_microbial_OC / self.CN_ratio_microbial_biomass
             + degradation_POC * self.CUE_POC / self.CN_ratio_POM
             + degradation_MAOC * self.CUE_MAOC / self.CN_ratio_MAOM
@@ -1072,7 +1072,7 @@ class RhizoSoil(Model):
     
     #@state
     def _CO2(self, CO2, dry_soil_mass, degradation_POC, degradation_MAOC, degradation_DOC, degradation_microbial_OC):
-        return CO2 + (self.time_step_in_seconds / dry_soil_mass) * (
+        return CO2 + (self.time_step / dry_soil_mass) * (
                 degradation_POC * (1 - self.CUE_POC)
                 + degradation_MAOC * (1 - self.CUE_MAOC)
                 + degradation_microbial_OC * (1 - self.CUE_MbOC)
@@ -1082,7 +1082,7 @@ class RhizoSoil(Model):
     @state
     def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, mineral_N_net_mineralization, 
                              mineralN_diffusion_from_roots, mineralN_diffusion_from_xylem, mineralN_uptake, mineral_N_fertilization, mineral_N_transport):
-        balance = dissolved_mineral_N + (self.time_step_in_seconds / dry_soil_mass) * (
+        balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
             mineral_N_net_mineralization
             + mineralN_diffusion_from_roots
             + mineralN_diffusion_from_xylem
@@ -1093,6 +1093,8 @@ class RhizoSoil(Model):
         balance[balance < 0] = 0
 
         return balance
+
+    # @note Post state coupling variables
 
     @segmentation
     @state
@@ -1111,7 +1113,7 @@ class RhizoSoil(Model):
     
     #TP@state
     def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):
-        balance = Cs_mucilage_soil + (self.time_step_in_seconds / (soil_moisture * voxel_volume)) * (
+        balance = Cs_mucilage_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
             mucilage_secretion
             - mucilage_degradation
         )
@@ -1120,7 +1122,7 @@ class RhizoSoil(Model):
     
     #TP@state
     def _Cs_cells_soil(self, Cs_cells_soil, soil_moisture, voxel_volume, cells_release, cells_degradation):
-        balance = Cs_cells_soil + (self.time_step_in_seconds / (soil_moisture * voxel_volume)) * (
+        balance = Cs_cells_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
                 cells_release
                 - cells_degradation
         )

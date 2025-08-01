@@ -1,12 +1,12 @@
 # Soil model
-from root_bridges.soil_model import SoilModel
+from openalea.rhizosoil.soil_model import SoilModel
 
 # Utilities
 from openalea.metafspm.composite_wrapper import CompositeModel
 from openalea.metafspm.component_factory import Choregrapher
 
 
-class RhizosphericSoil(CompositeModel):
+class RhizoSoil(CompositeModel):
     """
     Root-BRIDGES model
 
@@ -36,7 +36,7 @@ class RhizosphericSoil(CompositeModel):
         self.input_tables = scenario["input_tables"]
 
         # INIT INDIVIDUAL MODULES
-        self.soil = SoilModel(time_step_in_seconds=time_step,
+        self.soil = SoilModel(time_step=time_step,
                                 scene_xrange=scene_xrange, scene_yrange=scene_yrange, **soil_parameters)
 
         self.soil_voxels = self.soil.voxels
