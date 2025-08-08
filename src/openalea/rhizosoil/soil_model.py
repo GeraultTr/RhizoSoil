@@ -1069,6 +1069,27 @@ class SoilModel(Model):
 
         self.voxels["mineral_N_net_mineralization"] = dry_soil_mass * (balance - microbial_C / self.CN_ratio_microbial_biomass)
         return microbial_C / self.CN_ratio_microbial_biomass
+
+    @rate
+    def _mineral_N_net_mineralization(self, soil_temperature, voxel_volume):
+        """CN-Wheat mineralization function"""
+        
+        # First temperature effect on Vmax
+        Tref = 20 + 273.15
+        Tk = soil_temperature + 273.15
+        R = 8.3144  #: Physical parameter: Gas constant (J mol-1 K-1)
+        deltaHa = 55  # 89.7  #: Enthalpie of activation of parameter pname (kJ mol-1)
+        deltaS = 0.48  # 0.486  #: entropy term of parameter pname (kJ mol-1 K-1)
+        deltaHd = 154  # 149.3 #: Enthalpie of deactivation of parameter pname (kJ mol-1)
+
+        f_activation = np.exp((deltaHa * (Tk - Tref)) / (R * 1E-3 * Tref * Tk))  #: Energy of activation (normalized to unity)
+
+        f_deactivation = (1 + np.exp((Tref * deltaS - deltaHd) / (Tref * R * 1E-3))) / (1 + np.exp((Tk * deltaS - deltaHd) / (Tk * R * 1E-3)))  #: Energy of deactivation (normalized to unity)
+
+        T_effect_Vmax = f_activation * f_deactivation
+
+        mineralization_rate = 2.05e-6 / 1e6 # mol N nitrates m-3 s-1
+        return mineralization_rate * voxel_volume * T_effect_Vmax * 14 # expecting gN g-1 of soil
     
     #@state
     def _CO2(self, CO2, dry_soil_mass, degradation_POC, degradation_MAOC, degradation_DOC, degradation_microbial_OC):
