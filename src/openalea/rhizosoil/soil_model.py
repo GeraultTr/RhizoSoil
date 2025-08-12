@@ -2,11 +2,15 @@
 import numpy as np
 from dataclasses import dataclass
 import cmf
+import time
+from multiprocessing.shared_memory import SharedMemory
+import numpy as np
 
 # Utility packages
 from openalea.metafspm.component_factory import *
 from openalea.metafspm.component import Model, declare
 
+debug = True
 
 @dataclass
 class SoilModel(Model):
@@ -84,16 +88,14 @@ class SoilModel(Model):
     water_drainage: float =  declare(default=5/(24*3600), unit="g.s-1", unit_comment="of water", 
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="plant_scale_state", by="meteo", state_variable_type="extensive", edit_by="user")
-    mineral_N_fertilization: float =  declare(default=0., unit="g.s-1", unit_comment="of water", 
+    voxel_mineral_N_fertilization: float =  declare(default=0., unit="g.s-1", unit_comment="of nitrogen", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="state_variable", by="meteo", state_variable_type="extensive", edit_by="user")
+    mineral_N_fertilization_rate: float =  declare(default=0., unit="g.s-1", unit_comment="of nitrogen", 
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="state_variable", by="meteo", state_variable_type="extensive", edit_by="user")
 
     # --- @note STATE VARIABLES INITIALIZATION ---
-    # Intersection with roots
-    voxel_neighbor: int = declare(default=None, unit="adim", unit_comment="", description="",
-                                                 value_comment="", references="", DOI="",
-                                                 min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="descriptor", edit_by="user")
-
     # Temperature
     soil_temperature: float = declare(default=7.8, unit="°C", unit_comment="", description="soil temperature in contact with roots",
                                                  value_comment="Derived from Swinnen et al. 1994 C inputs, estimated from a labelling experiment starting 3rd of March, with average temperature at 7.8 °C", references="Swinnen et al. 1994", DOI="",
@@ -186,7 +188,7 @@ class SoilModel(Model):
     # In-voxel rates
     microbial_activity: float = declare(default=0., unit="adim", unit_comment="", description="microbial degradation activity indicator depending on microbial activity locally", 
                                         value_comment="", references="", DOI="",
-                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     degradation_POC: float = declare(default=0., unit=".s-1", unit_comment="gC per g of soil per second", description="degradation rate of POC", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
@@ -456,7 +458,7 @@ class SoilModel(Model):
     
 
 
-    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., **scenario):
+    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., **scenario):
         """
         DESCRIPTION
         -----------
@@ -469,15 +471,17 @@ class SoilModel(Model):
         """
 
         self.apply_scenario(**scenario)
-        self.initiate_voxel_soil(scene_xrange, scene_yrange)
+        self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth)
         self.time_step = time_step
-        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")   
+        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil") 
+        self.voxel_neighbor = {}
 
 
     # SERVICE FUNCTIONS
 
     # Just ressource for now
-    def initiate_voxel_soil(self, scene_xrange=1., scene_yrange=1.):
+    def initiate_voxel_soil(self, scene_xrange=1., scene_yrange=1., soil_depth=1., 
+                            voxel_length=3e-2, voxel_height=3e-2):
         """
         Note : not tested for now, just computed to support discussions.
         """
@@ -486,9 +490,7 @@ class SoilModel(Model):
         
         self.planting_depth = 5e-2
 
-        cubic_length = 3e-2
-        voxel_width = cubic_length
-        voxel_height = cubic_length
+        voxel_width = voxel_length
         voxel_volume = voxel_height * voxel_width * voxel_width
 
         self.delta_z = voxel_height
@@ -504,8 +506,9 @@ class SoilModel(Model):
 
         voxel_volume = voxel_height * actual_voxel_width * actual_voxel_length
 
-        scene_zrange = 1.
+        scene_zrange = soil_depth
         self.voxel_number_z = int(scene_zrange / voxel_height) + 1
+        self.scene_zrange = scene_zrange
 
         # Uncentered, positive grid
         y, z, x = np.indices((self.voxel_number_y, self.voxel_number_z, self.voxel_number_x))
@@ -515,6 +518,10 @@ class SoilModel(Model):
         self.voxels["y2"] = self.voxels["y1"] + actual_voxel_length
         self.voxels["z1"] = z * voxel_height
         self.voxels["z2"] = self.voxels["z1"] + voxel_height
+
+        self.voxel_dx = actual_voxel_width
+        self.voxel_dy = actual_voxel_length
+        self.voxel_dz = voxel_height
 
         self.voxel_grid_to_self("voxel_volume", voxel_volume)
 
@@ -540,11 +547,11 @@ class SoilModel(Model):
         self.voxels["C_mineralN_soil"] = self.voxels["dissolved_mineral_N"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 14
         self.voxels["C_amino_acids_soil"] = self.voxels["DON"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 14
         self.voxels["C_hexose_soil"] = self.voxels["DOC"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 6 / 12
-        self.voxels["Cv_solute_soil"] = self.voxels["C_mineralN_soil"] # Until we are sure of proper initialization and balance of these different concentrations
+        self.voxels["Cv_solutes_soil"] = self.voxels["C_mineralN_soil"] # Until we are sure of proper initialization and balance of these different concentrations
 
         # Initiate the transport model
         self.initiate_cmf(nx=self.voxel_number_x, ny=self.voxel_number_y, nz=self.voxel_number_z,
-                          dx=cubic_length, dy=cubic_length, dz=cubic_length)
+                          dx=voxel_length, dy=voxel_length, dz=voxel_height)
 
 
     def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
@@ -724,8 +731,44 @@ class SoilModel(Model):
                     props["voxel_neighbor"][vid] = None
         
         return props
+    
+    def compute_mtg_voxel_neighbors_fast(self, data, hs, mask,
+                                         xmin=0, ymin=0,
+                                        periodic_xy=True, flip_z=False):
+        
+        # barycenters (vectorized)
+        bx = 0.5 * (data[hs["x1"]] + data[hs["x2"]])
+        by = 0.5 * (data[hs["y1"]] + data[hs["y2"]])
+        bz = 0.5 * (data[hs["z1"]] + data[hs["z2"]])
 
+        # The integer indices of the vertices where the boolean mask need is True
+        idx = np.nonzero(mask)[0]
+        xs, ys, zs = bx[idx], by[idx], bz[idx]
 
+        # grid params
+        Ny, Nz, Nx = self.voxel_number_y, self.voxel_number_z, self.voxel_number_x
+        dx, dy, dz = self.voxel_dx, self.voxel_dy, self.voxel_dz
+
+        if flip_z:
+            zs = -zs
+
+        if periodic_xy:
+            Lx, Ly = Nx * dx, Ny * dy
+            xs = (xs - xmin) % Lx + xmin
+            ys = (ys - ymin) % Ly + ymin
+
+        ix = np.floor((xs - xmin) / dx).astype(np.int32)
+        iy = np.floor((ys - ymin) / dy).astype(np.int32)
+        iz = np.floor((zs - self.scene_zrange) / dz).astype(np.int32)
+
+        # clamp to valid range (if not periodic or due to tiny FP drift)
+        np.clip(ix, 0, Nx - 1, out=ix)
+        np.clip(iy, 0, Ny - 1, out=iy)
+        np.clip(iz, 0, Nz - 1, out=iz)
+
+        return iy, iz, ix
+    
+    
     def apply_to_voxel(self, props):
         """
         This function computes the flow perceived by voxels surrounding the considered root segment.
@@ -741,10 +784,28 @@ class SoilModel(Model):
         
         for vid in props["vertex_index"].keys():
             if props["length"][vid] > 0:
-                vy, vz, vx = props["voxel_neighbor"][vid]
-                for name in self.inputs:
-                    # print(name,  props[name])
-                    self.voxels[name][vy][vz][vx] += props[name][vid]
+                if props["voxel_neighbor"][vid] is not None:
+                    vy, vz, vx = props["voxel_neighbor"][vid]
+                    for name in self.inputs:
+                        # print(name,  props[name])
+                        self.voxels[name][vy][vz][vx] += props[name][vid]
+                else:
+                    print(f"WARNING! segment {vid} did not send its status to the soil")
+
+
+    def apply_to_voxel_fast(self, iy, iz, ix, data, hs, model_name, mask):
+        for name in self.inputs:
+            self.voxels[name].fill(0.)
+            
+            if name in self.pullable_inputs[model_name]:
+                source_variables = self.pullable_inputs[model_name][name]
+                to_apply = np.zeros(mask.sum(), dtype=np.float64)
+                for variable, unit_conversion in source_variables.items():
+                    to_apply += unit_conversion * data[hs[variable]][mask]
+            else:
+                to_apply = data[hs[name]][mask]
+
+            np.add.at(self.voxels[name], (iy, iz, ix), to_apply) 
 
 
     def get_from_voxel(self, props, soil_outputs):
@@ -756,20 +817,28 @@ class SoilModel(Model):
         :param soil_states: The soil states to be perceived by soil voxels. The underlying assumptions are that only intensive extensive variables are passed as arguments.
         :return:
         """
-        for vid in props["vertex_index"].keys():
-            vy, vz, vx = props["voxel_neighbor"][vid]
+        for vid, (vy, vz, vx) in props["voxel_neighbor"].items():
             for name in soil_outputs:
                 if name != "voxel_neighbor":
                     props[name][vid] = self.voxels[name][vy][vz][vx]
         
         return props
 
+    def get_from_voxel_fast(self, iy, iz, ix, data, hs, soil_outputs, mask):
+        Nx, Nz = self.voxel_number_x, self.voxel_number_z
+        linear_index = ((iy * Nz + iz) * Nx + ix)
+        for name in soil_outputs:
+            print('vs assigned', self.voxels[name].ravel()[linear_index])
+            data[hs[name], mask] = self.voxels[name].ravel()[linear_index]
+            print(name, data[hs[name], :])
+            
 
-    def pull_available_inputs(self, props):
+
+    def pull_available_inputs(self, props, model_name):
         # vertices = props["vertex_index"].keys()
         vertices = [vid for vid in props["vertex_index"].keys() if props["living_struct_mass"][vid] > 0]
         
-        for input, source_variables in self.pullable_inputs[props["model_name"]].items():
+        for input, source_variables in self.pullable_inputs[model_name].items():
             if input not in props:
                 props[input] = {}
             # print(input, source_variables)
@@ -783,32 +852,88 @@ class SoilModel(Model):
 
         # We get fluxes and voxel interception from the plant mtgs (If none passed, soil model can be autonomous)
         # Waiting for all plants to put their outputs
+        t1 = time.time()
 
         batch = []
         for _ in range(len(queues_soil_to_plants)):
             batch.append(queue_plants_to_soil.get())
+        
+        t2 = time.time()
+        if debug: print("soil waits plants: ", t2 - t1)
 
-        # LINKING MODULES after plant initialization
-        keep_props_locally = {}
         for plant_data in batch:
-            # Unpacking message
-            id = plant_data["plant_id"]
-            props = plant_data["data"]
-            
-            props = self.pull_available_inputs(props)
-            props = self.compute_mtg_voxel_neighbors(props)
-            self.apply_to_voxel(props)
-            keep_props_locally[id] = props
+            self.get_from_plant(plant_data)
 
         # Run the soil model
         self.choregrapher(module_family=self.__class__.__name__, *args)
 
-        # Then apply the states to the plants
-        for id, props in keep_props_locally.items(): # Not reteived from batch once more since props may be a copy when pulled out of a mp.Queue.get()
-            props = self.get_from_voxel(props, soil_outputs=soil_outputs)
-            # Update soil properties so that plants can retreive
-            queues_soil_to_plants[id].put(props)
+        homogeneize_properties = True
+        if homogeneize_properties:
+            v = self.voxels
+            v["dissolved_mineral_N"] = np.ones_like(v["dissolved_mineral_N"]) * (v["dissolved_mineral_N"] * (v["dry_soil_mass"])).sum() / (v["dry_soil_mass"]).sum()
+            v["C_mineralN_soil"] = v["dissolved_mineral_N"] * (v["dry_soil_mass"] / (v["soil_moisture"] * v["voxel_volume"])) / 14 
 
+        t3 = time.time()
+        if debug: print("soil solve: ", t3 - t2)
+
+        for plant_data in batch:
+
+            self.send_to_plant(plant_data, soil_outputs)
+            
+            # Update soil properties so that plants can retreive
+            queues_soil_to_plants[id].put("finished")
+        
+        t4 = time.time()
+        if debug: print("soil sends plants: ", t4 - t3)
+
+    def get_from_plant(self, plant_data):
+        """
+        TODO : probably transfer to composite
+        """
+        # Unpacking message
+        id = plant_data["plant_id"]
+        model_name = plant_data["model_name"]
+        shm = SharedMemory(name=id)
+        buf = np.ndarray((35, 10000), dtype=np.float64, buffer=shm.buf)
+        hs = plant_data["handshake"]
+        vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
+
+        iy, iz, ix = self.compute_mtg_voxel_neighbors_fast(buf, hs, mask=vertices_mask)
+        self.apply_to_voxel_fast(iy, iz, ix, buf, hs, model_name, vertices_mask)
+        # Stored for sending to plants later
+        self.voxel_neighbor[id] = (iy, iz, ix)
+
+        shm.close()
+
+        # Legacy code commented
+        # props = plant_data["data"]
+        # props = self.pull_available_inputs(props, model_name)
+        # props = self.compute_mtg_voxel_neighbors(props)
+        # self.apply_to_voxel(props)
+        # voxel_neighbors[id] = props["voxel_neighbor"]
+
+
+    def send_to_plant(self, plant_data, soil_outputs):
+        """
+        TODO : probably transfer to composite
+        """
+        # Then apply the states to the plants
+        id = plant_data["plant_id"]
+        hs = plant_data["handshake"]
+        shm = SharedMemory(name=id)
+        buf = np.ndarray((35, 10000), dtype=np.float64, buffer=shm.buf)
+        vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
+        self.get_from_voxel_fast(*self.voxel_neighbor[id], buf, hs, soil_outputs, vertices_mask)
+
+        shm.close()
+
+        # legacy_code_commented
+        # # EDIT : removed modification of the input props, there should be no variable link between inputs and outputs, excepted voxel neighbors for interception 
+        # outputs = {name: {} for name in soil_outputs}
+        # outputs["voxel_neighbor"] = vn
+        # outputs = self.get_from_voxel(outputs, soil_outputs=soil_outputs)
+
+    
     
     # MODEL EQUATIONS
 
@@ -976,12 +1101,10 @@ class SoilModel(Model):
         amino_acid_transport[:, :, 1:-1] = self.solute_diffusion(soil_water_flux, soil_moisture, C_amino_acids_soil) - self.solute_water_advection(soil_water_flux, C_amino_acids_soil)
         return amino_acid_transport
     
-    #TP@actual
-    #TP@rate
-    def _mineral_N_fertilization(self, dry_soil_mass):
-        result = np.zeros_like(dry_soil_mass)
-        result[:, :, 1] = self.mineral_N_fertilization[1]
-        return result
+    @actual
+    @rate
+    def _voxel_mineral_N_fertilization(self, mineral_N_fertilization_rate, dry_soil_mass):
+        return dry_soil_mass * mineral_N_fertilization_rate.mean() / dry_soil_mass.sum()
 
     # @note STATES
 
@@ -1089,7 +1212,7 @@ class SoilModel(Model):
         T_effect_Vmax = f_activation * f_deactivation
 
         mineralization_rate = 2.05e-6 / 1e6 # mol N nitrates m-3 s-1
-        return mineralization_rate * voxel_volume * T_effect_Vmax * 14 # expecting gN g-1 of soil
+        return 44.44 * mineralization_rate * voxel_volume * T_effect_Vmax * 14 # expecting gN g-1 of soil # NOTE : 44 factor specific to small soil volume to match rates of CN-Wheat!
     
     #@state
     def _CO2(self, CO2, dry_soil_mass, degradation_POC, degradation_MAOC, degradation_DOC, degradation_microbial_OC):
@@ -1102,13 +1225,13 @@ class SoilModel(Model):
     
     @state
     def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, mineral_N_net_mineralization, 
-                             mineralN_diffusion_from_roots, mineralN_diffusion_from_xylem, mineralN_uptake, mineral_N_fertilization, mineral_N_transport):
+                             mineralN_diffusion_from_roots, mineralN_diffusion_from_xylem, mineralN_uptake, voxel_mineral_N_fertilization, mineral_N_transport):
         balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
             mineral_N_net_mineralization
             + mineralN_diffusion_from_roots
             + mineralN_diffusion_from_xylem
             - mineralN_uptake
-            + mineral_N_fertilization
+            + voxel_mineral_N_fertilization
             + mineral_N_transport)
         
         balance[balance < 0] = 0
