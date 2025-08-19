@@ -10,7 +10,8 @@ import numpy as np
 from openalea.metafspm.component_factory import *
 from openalea.metafspm.component import Model, declare
 
-debug = True
+
+debug = False
 
 @dataclass
 class SoilModel(Model):
@@ -469,7 +470,7 @@ class SoilModel(Model):
         :param scenario: mapping of existing variable initialization and parameters to superimpose.
         :return:
         """
-
+        # Before any other operation, we apply the provided scenario by changing default parameters and initialization
         self.apply_scenario(**scenario)
         self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth)
         self.time_step = time_step
@@ -733,7 +734,7 @@ class SoilModel(Model):
         return props
     
     def compute_mtg_voxel_neighbors_fast(self, data, hs, mask,
-                                         xmin=0, ymin=0,
+                                         xmin=0, ymin=0, zmin=0,
                                         periodic_xy=True, flip_z=False):
         
         # barycenters (vectorized)
@@ -742,8 +743,9 @@ class SoilModel(Model):
         bz = 0.5 * (data[hs["z1"]] + data[hs["z2"]])
 
         # The integer indices of the vertices where the boolean mask need is True
-        idx = np.nonzero(mask)[0]
-        xs, ys, zs = bx[idx], by[idx], bz[idx]
+        # idx = np.nonzero(mask)[0]
+        # xs, ys, zs = bx[idx], by[idx], bz[idx]
+        xs, ys, zs = bx[mask], by[mask], bz[mask]
 
         # grid params
         Ny, Nz, Nx = self.voxel_number_y, self.voxel_number_z, self.voxel_number_x
@@ -751,7 +753,7 @@ class SoilModel(Model):
 
         if flip_z:
             zs = -zs
-
+        
         if periodic_xy:
             Lx, Ly = Nx * dx, Ny * dy
             xs = (xs - xmin) % Lx + xmin
@@ -759,8 +761,7 @@ class SoilModel(Model):
 
         ix = np.floor((xs - xmin) / dx).astype(np.int32)
         iy = np.floor((ys - ymin) / dy).astype(np.int32)
-        iz = np.floor((zs - self.scene_zrange) / dz).astype(np.int32)
-        # print("before_clip", ix, iy, iz)
+        iz = np.floor((zs - zmin) / dz).astype(np.int32)
 
         # clamp to valid range (if not periodic or due to tiny FP drift)
         np.clip(ix, 0, Nx - 1, out=ix)
@@ -828,12 +829,14 @@ class SoilModel(Model):
         return props
 
     def get_from_voxel_fast(self, iy, iz, ix, data, hs, soil_outputs, mask):
+        # cols = np.flatnonzero(mask)
         # Nx, Nz = self.voxel_number_x, self.voxel_number_z
         # linear_index = ((iy * Nz + iz) * Nx + ix)
         # print("idx shape", ix.shape)
         # print(linear_index.shape)
         for name in soil_outputs:
             # print('vs assigned', self.voxels[name].ravel())
+            # print(name, ix[cols].shape, data[hs[name], mask].shape, self.voxels[name][iy, iz, ix].shape)
             data[hs[name], mask] = self.voxels[name][iy, iz, ix]
             # print(name, data[hs[name], :])
             
@@ -861,13 +864,14 @@ class SoilModel(Model):
 
         batch = []
         for _ in range(len(queues_soil_to_plants)):
-            batch.append(queue_plants_to_soil.get())
+            plant_data = queue_plants_to_soil.get()
+            batch.append(plant_data)
+
+            # Deplaced here because if one plant hangs, their is not reason not to retreive others in the meantime
+            self.get_from_plant(plant_data)
         
         t2 = time.time()
         if debug: print("soil waits plants: ", t2 - t1)
-
-        for plant_data in batch:
-            self.get_from_plant(plant_data)
 
         # Run the soil model
         self.choregrapher(module_family=self.__class__.__name__, *args)
@@ -886,7 +890,7 @@ class SoilModel(Model):
 
             self.send_to_plant(plant_data, soil_outputs)
             
-            # Update soil properties so that plants can retreive
+            # Send a message to plants so that they can resume with last soil state
             queues_soil_to_plants[plant_id].put("finished")
         
         t4 = time.time()
@@ -900,15 +904,14 @@ class SoilModel(Model):
         plant_id = plant_data["plant_id"]
         model_name = plant_data["model_name"]
         shm = SharedMemory(name=plant_id)
-        buf = np.ndarray((35, 10000), dtype=np.float64, buffer=shm.buf)
+        buf = np.ndarray((35, 20000), dtype=np.float64, buffer=shm.buf)
         hs = plant_data["handshake"]
         vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
 
         iy, iz, ix = self.compute_mtg_voxel_neighbors_fast(buf, hs, mask=vertices_mask, flip_z=True)
         self.apply_to_voxel_fast(iy, iz, ix, buf, hs, model_name, vertices_mask)
         # Stored for sending to plants later
-        # print("results", iy, iz, ix)
-        self.voxel_neighbor[id] = (iy, iz, ix)
+        self.voxel_neighbor[plant_id] = (iy, iz, ix)
 
         shm.close()
 
@@ -928,9 +931,9 @@ class SoilModel(Model):
         plant_id = plant_data["plant_id"]
         hs = plant_data["handshake"]
         shm = SharedMemory(name=plant_id)
-        buf = np.ndarray((35, 10000), dtype=np.float64, buffer=shm.buf)
+        buf = np.ndarray((35, 20000), dtype=np.float64, buffer=shm.buf)
         vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
-        self.get_from_voxel_fast(*self.voxel_neighbor[id], buf, hs, soil_outputs, vertices_mask)
+        self.get_from_voxel_fast(*self.voxel_neighbor[plant_id], buf, hs, soil_outputs, vertices_mask)
 
         shm.close()
 
