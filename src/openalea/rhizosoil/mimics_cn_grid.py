@@ -75,7 +75,7 @@ def initialize_pools_grid(shape, dtype=np.float64):
     return state
 
 
-@njit
+# @njit
 def get_parameters_rhizodeposits_grid(annual_NPP_C, annual_RD_C, clay_pct, Tsoil, input_RD_CN, input_LIT_CN):
     """
     All parameter values and comments are from `siteSpecificParameters`
@@ -237,7 +237,7 @@ def get_parameters_rhizodeposits_grid(annual_NPP_C, annual_RD_C, clay_pct, Tsoil
     )
 
 
-@njit
+# @njit
 def FXEQ_grid(state,
         Inputs, VMAX, KM, CUE, fPHYS, fCHEM, fAVAI, FI, turnover, desorb,
         KO, NUE, CN_m, CN_s, CN_r, CN_K, Nleak, densDep, RootUptakeIN=0., time_step_in_hours=1, leaching=True):
@@ -327,14 +327,14 @@ def FXEQ_grid(state,
     upMIC_1    = CUE_1*(LITmin_1 + SOMmin_1) + CUE_2*(LITmin_2)
     upMIC_1_N  = NUE* (LITminN_1 + SOMminN_1) + NUE*(LITminN_2) + DINup_1
     CNup_1    = (upMIC_1)/(upMIC_1_N+1e-100) #Trying to optimize run speed here by avoiding /0
-    Overflow_1 = (upMIC_1) - (upMIC_1_N)*min(CN_r, CNup_1)
-    Nspill_1   = (upMIC_1_N) - (upMIC_1)/max(CN_r, CNup_1)
+    Overflow_1 = (upMIC_1) - (upMIC_1_N)*np.minimum(CN_r, CNup_1)
+    Nspill_1   = (upMIC_1_N) - (upMIC_1)/np.maximum(CN_r, CNup_1)
   
     upMIC_2    = CUE_3*(LITmin_3 + SOMmin_2) + CUE_4*(LITmin_4)
     upMIC_2_N  = NUE*(LITminN_3 + SOMminN_2) + NUE*(LITminN_4) + DINup_2
     CNup_2    = (upMIC_2)/(upMIC_2_N+1e-100)
-    Overflow_2 = (upMIC_2) - (upMIC_2_N)*min(CN_K, CNup_2)
-    Nspill_2   = (upMIC_2_N) - (upMIC_2)/max(CN_K, CNup_2)
+    Overflow_2 = (upMIC_2) - (upMIC_2_N)*np.minimum(CN_K, CNup_2)
+    Nspill_2   = (upMIC_2_N) - (upMIC_2)/np.maximum(CN_K, CNup_2)
     ######
 
     dLIT_1 = Inputs_1*(1-FI_1) - LITmin_1 - LITmin_3
@@ -364,14 +364,88 @@ def FXEQ_grid(state,
         LeachingLoss = Nleak*DIN ### NOTE added condition to be able to handle transport from another module
         dDIN = dDIN-LeachingLoss #N leaching losses
     
-    return np.array([
-        dLIT_1, dLIT_2, dMIC_1, dMIC_2, dSOM_1, dSOM_2, dSOM_3,
-        dLIT_1_N, dLIT_2_N, dMIC_1_N, dMIC_2_N, dSOM_1_N, dSOM_2_N, dSOM_3_N, dDIN]) * time_step_in_hours
+    out = np.empty((15,) + state.shape[1:], dtype=state.dtype)
+    out[0]  = dLIT_1
+    out[1]  = dLIT_2
+    out[2]  = dMIC_1
+    out[3]  = dMIC_2
+    out[4]  = dSOM_1
+    out[5]  = dSOM_2
+    out[6]  = dSOM_3
+    out[7]  = dLIT_1_N
+    out[8]  = dLIT_2_N
+    out[9]  = dMIC_1_N
+    out[10] = dMIC_2_N
+    out[11] = dSOM_1_N
+    out[12] = dSOM_2_N
+    out[13] = dSOM_3_N
+    out[14] = dDIN
+    return out * time_step_in_hours
+
+def _solve_one_steady_state(params, bounds=(None, None), dt=1.0):
+    # Solve a single-voxel 15-var system with fsolve→lsq fallback
+    x0 = initialize_pools_grid((1,1,1)).ravel()  # (15,)
+    def fun(x):
+        s = x.reshape(15,1,1,1)
+        r = FXEQ_grid(s, *params, RootUptakeIN=0.0, time_step_in_hours=dt, leaching=True)
+        return r.reshape(15)
+    try:
+        x = scipy.optimize.fsolve(fun, x0, xtol=1e-10, maxfev=2000)
+        lo, hi = bounds
+        success = (lo is None or np.all(x > lo)) and (hi is None or np.all(x < hi))
+        if not success:
+            raise ValueError
+        return x.reshape(15)
+    except Exception:
+        sol = scipy.optimize.least_squares(fun, x0, bounds=bounds)
+        return (sol.x if sol.success else x0).reshape(15)
 
 
 class MIMICS_CN:
 
     def __init__(self, time_step_in_hours=1, clay_percentage=np.array(())):
+
+        self.time_step_in_hours = time_step_in_hours
+        self.clay_percentage = clay_percentage
+        soil_shape = clay_percentage.shape
+        pools_shape = (15, *soil_shape)
+
+
+        # Prepare output
+        state = np.empty(pools_shape, dtype=np.float64)
+
+        # If clay are floats, use unique levels robustly
+        # (If they are exact bins like 10, 20, 30, you can drop 'round')
+        clay_levels = np.unique(clay_percentage)
+
+        for c in clay_levels:
+            print(f"initializing clay level {c}")
+            mask = clay_percentage == c
+
+            # Build 1×1×1 parameter fields for this clay level
+            scalar_shape = (1,1,1)
+            prop = 0.5
+            params = get_parameters_rhizodeposits_grid(
+                annual_NPP_C = np.full(scalar_shape, (1-prop)*100.),
+                annual_RD_C  = np.full(scalar_shape, prop*100),
+                clay_pct     = np.full(scalar_shape, c),
+                Tsoil        = np.full(scalar_shape, 10),
+                input_RD_CN  = np.full(scalar_shape, 15),
+                input_LIT_CN = np.full(scalar_shape, 15),
+            )
+
+            # Solve once for this class (voxel-sized residual)
+            sol_15 = _solve_one_steady_state(params, bounds=(0., 1e7), dt=time_step_in_hours)  # (15,)
+
+            # Paste to all voxels of that class
+            # arr[:, mask] view has shape (15, M) → broadcast sol[:, None]
+            state[:, mask] = sol_15[:, None]
+
+        self.state = state
+
+
+
+    def __init__old(self, time_step_in_hours=1, clay_percentage=np.array(())):
 
         self.time_step_in_hours = time_step_in_hours
         self.clay_percentage = clay_percentage
@@ -396,6 +470,7 @@ class MIMICS_CN:
             state4d = state_C_N.reshape(pools_shape)
             deriv4d = FXEQ_grid(state4d, *parameters, RootUptakeIN=np.zeros(soil_shape), time_step_in_hours=time_step_in_hours)
             return deriv4d.ravel()
+        print("entering")
         steady_state_C_N, success_C_N = self._find_steady_state(
             func, steady_state_C_N_guess, bounds=(0, 1e7), name='C,N'
         )
@@ -411,6 +486,7 @@ class MIMICS_CN:
         state[7] = labile_ON
         state[14] = labile_IN
         
+        # TODO cache parameters that do no vary with these inputs
         parameters = get_parameters_rhizodeposits_grid(
             annual_NPP_C = litter_inputs, # gC/m2/y
             annual_RD_C = rhizodeposits_inputs, # gC/m2/y
@@ -419,8 +495,12 @@ class MIMICS_CN:
             input_RD_CN = rhizodeposits_CN, # adim
             input_LIT_CN = litter_CN
         )
-        self.state = np.maximum(state + FXEQ_grid(state, *parameters, RootUptakeIN=net_N_uptake, time_step_in_hours=self.time_step_in_hours, leaching=False), 0.)
 
+        deriv = FXEQ_grid(state, *parameters, RootUptakeIN=net_N_uptake, time_step_in_hours=self.time_step_in_hours, leaching=False)
+        state += deriv
+        np.maximum(state, 0.0, out=state)
+
+    
     
     def _find_steady_state(self, func, x0, bounds=(None,None), name='C'):
         """
