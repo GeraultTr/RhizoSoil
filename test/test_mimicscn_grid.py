@@ -3,8 +3,7 @@ import numpy as np
 
 
 if __name__ == "__main__":
-    n = 100
-    clay = np.full((n, n, n), 30)
+    clay = np.full((15, 15, 300), 30)
     mm = MIMICS_CN(clay_percentage=clay)
     print("initialized")
 

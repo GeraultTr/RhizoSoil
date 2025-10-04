@@ -1,0 +1,1041 @@
+# Public packages
+import numpy as np
+from dataclasses import dataclass
+import time
+from multiprocessing.shared_memory import SharedMemory
+import numpy as np
+
+# subcomponents packages
+import cmf
+from openalea.rhizosoil.mimics_cn_grid import MIMICS_CN
+
+
+# Utility packages
+from openalea.metafspm.component_factory import *
+from openalea.metafspm.component import Model, declare
+
+
+debug = False
+
+@dataclass
+class SoilModel(Model):
+    """
+    Empty doc
+    """
+
+    # --- @note INPUTS STATE VARIABLES FROM OTHER COMPONENTS : default values are provided if not superimposed by model coupling ---
+
+    # FROM CARBON MODEL
+    hexose_exudation: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    phloem_hexose_exudation: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    hexose_uptake_from_soil: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    phloem_hexose_uptake_from_soil: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    mucilage_secretion: float = declare(default=0., unit="mol.s-1", unit_comment="of equivalent hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    cells_release: float = declare(default=0., unit="mol.s-1", unit_comment="of equivalent hexose", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
+    
+    # FROM ANATOMY MODEL
+    root_exchange_surface: float = declare(default=0., unit="m2", unit_comment="", description="Exchange surface between soil and symplasmic parenchyma.", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="input", by="model_anatomy", state_variable_type="", edit_by="user")
+
+    # FROM GROWTH MODEL
+    length: float = declare(default=3.e-3, unit="m", unit_comment="", description="Example root segment length", 
+                                                    min_value="", max_value="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_growth", state_variable_type="NonInertialExtensive", edit_by="user")
+    initial_length: float = declare(default=3.e-3, unit="m", unit_comment="", description="Example root segment length", 
+                                                    min_value="", max_value="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_growth", state_variable_type="NonInertialExtensive", edit_by="user")
+
+    # FROM NITROGEN MODEL
+    mineralN_uptake: float = declare(default=0., unit="mol.s-1", unit_comment="of nitrates", description="", 
+                                                    min_value="", max_value="", value_comment="", references="", DOI="", 
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    amino_acids_uptake: float = declare(default=0., unit="mol.s-1", unit_comment="of amino acids", description="", 
+                                                    min_value="", max_value="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    mineralN_diffusion_from_roots: float =  declare(default=0., unit="mol.s-1", unit_comment="of nitrates", description="", 
+                                                    min_value="", max_value="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    amino_acids_diffusion_from_roots: float =  declare(default=0., unit="mol.s-1", unit_comment="of amino acids", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    mineralN_diffusion_from_xylem: float =  declare(default=0., unit="mol.s-1", unit_comment="of nitrates", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    amino_acids_diffusion_from_xylem: float =  declare(default=0., unit="mol.s-1", unit_comment="of amino_acids", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
+    
+    # FROM WATER MODEL
+    water_uptake: float =  declare(default=0., unit="m3.s-1", unit_comment="of water", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="input", by="model_water", state_variable_type="extensive", edit_by="user")
+    
+    # FROM METEO
+    water_irrigation: float =  declare(default=10/(24*3600), unit="g.s-1", unit_comment="of water", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="plant_scale_state", by="meteo", state_variable_type="extensive", edit_by="user")
+    water_evaporation: float =  declare(default=5/(24*3600), unit="g.s-1", unit_comment="of water", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="plant_scale_state", by="meteo", state_variable_type="extensive", edit_by="user")
+    water_drainage: float =  declare(default=5/(24*3600), unit="g.s-1", unit_comment="of water", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="plant_scale_state", by="meteo", state_variable_type="extensive", edit_by="user")
+    voxel_mineral_N_fertilization: float =  declare(default=0., unit="g.s-1", unit_comment="of nitrogen", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="state_variable", by="meteo", state_variable_type="extensive", edit_by="user")
+    mineral_N_fertilization_rate: float =  declare(default=0., unit="g.s-1", unit_comment="of nitrogen", 
+                                                    min_value="", max_value="", description="", value_comment="", references="", DOI="",
+                                                    variable_type="state_variable", by="meteo", state_variable_type="extensive", edit_by="user")
+
+    # --- @note STATE VARIABLES INITIALIZATION ---
+    # Temperature
+    soil_temperature: float = declare(default=7.8, unit="°C", unit_comment="", description="soil temperature in contact with roots",
+                                                 value_comment="Derived from Swinnen et al. 1994 C inputs, estimated from a labelling experiment starting 3rd of March, with average temperature at 7.8 °C", references="Swinnen et al. 1994", DOI="",
+                                                 min_value="", max_value="", variable_type="state_variable", by="model_temperature", state_variable_type="intensive", edit_by="user")
+    rain_intensity: float = declare(default=0., unit="mm/h", unit_comment="", description="hourly rain intensity",
+                                                 value_comment="", references="", DOI="",
+                                                 min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+
+    # C related
+    POC: float = declare(default=2.e-3, unit="adim", unit_comment="gC per g of dry soil", description="Particulate Organic Carbon massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    MAOC: float = declare(default=8.e-3, unit="adim", unit_comment="gC per g of dry soil", description="Mineral Associated Organic Carbon in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    DOC: float = declare(default=2e-7, unit="adim", unit_comment="gC per g of dry soil", description="Dissolved Organic Carbon massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    microbial_C: float = declare(default=0.2e-3, unit="adim", unit_comment="gC per g of dry soil", description="microbial Carbon massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    CO2: float = declare(default=0, unit="adim", unit_comment="gC per g of dry soil", description="Carbon dioxyde massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    C_hexose_soil: float = declare(default=2.4e-3, unit="mol.m-3", unit_comment="of hexose", description="Hexose concentration in soil", 
+                                        value_comment="", references="Fischer et al 2007, water leaching estimation", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    content_hexose_soil: float = declare(default=2.4e-3, unit="mol.g-1", unit_comment="of hexose", description="Hexose concentration in soil", 
+                                        value_comment="", references="Fischer et al 2007, water leaching estimation", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    Cs_mucilage_soil: float = declare(default=15, unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    Cs_cells_soil: float = declare(default=15, unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    # N related
+    PON: float = declare(default=0.1e-3, unit="adim", unit_comment="gN per g of dry soil", description="Particulate Organic Nitrogen massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    MAON: float = declare(default=0.8e-3, unit="adim", unit_comment="gN per g of dry soil", description="Mineral-Associated Organic Nitrogen massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    DON: float = declare(default=2e-8, unit="adim", unit_comment="gN per g of dry soil", description="Dissolved Organic Nitrogen massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    microbial_N: float = declare(default=0.03e-3, unit="adim", unit_comment="gN per g of dry soil", description="microbial N massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    Nm_fungus: float = declare(default=0., unit="adim", unit_comment="gN per g of dry soil", description="mycorrhiza N massic concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    dissolved_mineral_N: float = declare(default=20e-6, unit="adim", unit_comment="gN per g of dry soil", description="dissolved mineral N massic concentration in soil",
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+
+    C_mineralN_soil: float = declare(default=2.2, unit="mol.m-3", unit_comment="of equivalent mineral nitrogen", description="Mineral nitrogen concentration in soil", 
+                                        value_comment="", references="Fischer et al. 1966", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    C_amino_acids_soil: float = declare(default=8.2e-3, unit="mol.m-3", unit_comment="of equivalent mineral nitrogen", description="Mineral nitrogen concentration in soil", 
+                                        value_comment="", references="Fischer et al 2007, water leaching estimation", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    
+    # All solutes
+    Cv_solutes_soil: float = declare(default=32.2 / 10, unit="mol.m-3", unit_comment="mol of  all dissolved mollecules in the soil solution", description="All dissolved mollecules concentration", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+
+    # Water related
+    water_potential_soil: float = declare(default=-0.1e6, unit="Pa", unit_comment="", description="Mean soil water potential", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    soil_moisture: float = declare(default=0.3, unit="adim", unit_comment="g.g-1", description="Volumetric proportion of water per volume of soil", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    water_volume: float = declare(default=0.25e-6, unit="m3", unit_comment="", description="Volume of the water in the soil element in contact with a the root segment", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    
+    
+    # Structure related
+    voxel_volume: float = declare(default=1e-6, unit="m3", unit_comment="", description="Volume of the soil element in contact with a the root segment",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    bulk_density: float = declare(default=1.42, unit="g.mL", unit_comment="", description="Volumic density of the dry soil", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    dry_soil_mass: float = declare(default=1.42, unit="g", unit_comment="", description="dry weight of the considered voxel element", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    clay_percentage: float = declare(default=30, unit="%", unit_comment="", description="clay percentage of voxel", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    
+    # --- @note RATES INITIALIZATION ---
+    # In-voxel rates
+    mineral_N_net_mineralization: float = declare(default=0., unit=".s-1", unit_comment="gN per g of soil per second", description="mineral N uptake by micro organisms", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    
+    # --- @note PARAMETERS ---
+
+    # C related
+    
+    ratio_C_per_amino_acid: float = declare(default=5, unit="adim", unit_comment="number of carbon per molecule of amino acid", description="", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    CN_ratio_amino_acids: float = declare(default=5/1.4, unit="adim", unit_comment="", description="CN ratio of amino acids (6 C and 1.4 N on average)", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    # Water-related parameters
+    water_volumic_mass: float = declare(default=1e6, unit="g.m-3", unit_comment="", description="Constant water volumic mass", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="extensive", edit_by="user")
+    g_acceleration: float = declare(default=9.806, unit="m.s-2", unit_comment="", description="gravitationnal acceleration constant", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="extensive", edit_by="user")
+    saturated_hydraulic_conductivity: float = declare(default=0.24, unit="adim", unit_comment="m.day-1", description="staturated hydraulic conductivity parameter", 
+                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    theta_R: float = declare(default=0.0835, unit="adim", unit_comment="m3.m-3", description="Soil retention moisture", 
+                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    theta_S: float = declare(default=0.4383, unit="adim", unit_comment="m3.m-3", description="Soil saturation moisture", 
+                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    water_alpha: float = declare(default=0.0138, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
+                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    water_n: float = declare(default=1.3945, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
+                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    field_capacity: float = declare(default=0.36, unit="adim", unit_comment="", description="Soil moisture at which soil doesn't retain water anymore.", 
+                                        value_comment="", references="Cornell university, case of sandy loam soil", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    permanent_wilting_point: float = declare(default=0.065, unit="adim", unit_comment="", description="Soil moisture at which soil doesn't retain water anymore.", 
+                                        value_comment="", references="Cornell university, case of sandy loam soil", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    water_dt: float = declare(default=3600, unit="s", unit_comment="", description="Initialized time_step to try converging the soil water potential profile", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    min_water_dt: float = declare(default=10, unit="s", unit_comment="", description="min value for adaptative time-step in the convergence cycle for water potential profile", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    max_water_dt: float = declare(default=3600, unit="s", unit_comment="", description="max value for adaptative time-step in the convergence cycle for water potential profile", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    water_potential_tolerance: float = declare(default=1, unit="Pa", unit_comment="", description="tolerance for soil water potential gradient profile convergence", 
+                                        value_comment="estimated from general usual for pressure head expression (1e-4 m) * rho * g_acceleration = 0.91 Pa", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    max_iterations: int = declare(default=20, unit="adim", unit_comment="", description="Maximal convergence cycle for water potential profile", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    C_solutes_background: float = declare(default=0, unit="mol.m-3", unit_comment="", description="Background non C and non N solutes concentration in soil", 
+                                        value_comment="Raw estimation to align with inorganic N range for now", references="TODO", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    # W patch initialization parameters
+    water_moisture_patch: float = declare(default=0.2, unit="mol.m-3", unit_comment="of equivalent mineral nitrogen", description="Mineral nitrogen concentration in a located patch in soil", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_depth_water_moisture: float = declare(default=0., unit="m", unit_comment="", description="Depth of a nitrate patch in soil", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_uniform_width_water_moisture: float = declare(default=2*0.1, unit="m", unit_comment="", description="Width of the zone of the patch with uniform concentration of nitrate", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_transition_water_moisture: float = declare(default=1e-3, unit="m", unit_comment="", description="Variance of the normal law smooting the boundary transition of a nitrate patch with the background concentration", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+
+    # N patch initialization parameters
+    
+    dissolved_mineral_N_patch: float = declare(default=20e-6, unit="mol.g-1", unit_comment="of equivalent mineral nitrogen", description="Mineral nitrogen concentration in a located patch in soil", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_depth_mineralN: float = declare(default=10e-2, unit="m", unit_comment="", description="Depth of a nitrate patch in soil", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_uniform_width_mineralN: float = declare(default=4e-2, unit="m", unit_comment="", description="Width of the zone of the patch with uniform concentration of nitrate", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    patch_transition_mineralN: float = declare(default=1e-3, unit="m", unit_comment="", description="Variance of the normal law smooting the boundary transition of a nitrate patch with the background concentration", 
+                                        value_comment="", references="Drew et al. 1975", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    # Temperature
+    process_at_T_ref: float = declare(default=1., unit="adim", unit_comment="", description="Proportion of maximal process intensity occuring at T_ref", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    
+    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., **scenario):
+        """
+        DESCRIPTION
+        -----------
+        __init__ method
+
+        :param g: the root MTG
+        :param time_step: time step of the simulation (s)
+        :param scenario: mapping of existing variable initialization and parameters to superimpose.
+        :return:
+        """
+        # Before any other operation, we apply the provided scenario by changing default parameters and initialization
+        self.apply_scenario(**scenario)
+        self.time_step = time_step
+        self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth)
+        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil") 
+        self.voxel_neighbor = {}
+
+
+    # SERVICE FUNCTIONS
+
+    # Just ressource for now
+    def initiate_voxel_soil(self, scene_xrange=1., scene_yrange=1., soil_depth=1., 
+                            voxel_length=3e-2, voxel_height=3e-2):
+        """
+        Note : not tested for now, just computed to support discussions.
+        """
+        self.voxels = {}
+
+        
+        self.planting_depth = 5e-2
+
+        voxel_width = voxel_length
+        voxel_volume = voxel_height * voxel_width * voxel_width
+
+        self.delta_z = voxel_height
+        self.voxels_Z_section_area = voxel_width * voxel_width
+        
+        self.voxel_number_x = int(scene_xrange / voxel_width) + 1
+        actual_voxel_width = scene_xrange / self.voxel_number_x
+        self.scene_xrange = scene_xrange
+
+        self.voxel_number_y = int(scene_yrange / voxel_width) + 1
+        actual_voxel_length = scene_yrange / self.voxel_number_y
+        self.scene_yrange = scene_yrange
+
+        voxel_volume = voxel_height * actual_voxel_width * actual_voxel_length
+
+        scene_zrange = soil_depth
+        self.voxel_number_z = int(scene_zrange / voxel_height) + 1
+        self.scene_zrange = scene_zrange
+
+        # Uncentered, positive grid
+        y, z, x = np.indices((self.voxel_number_y, self.voxel_number_z, self.voxel_number_x))
+        self.voxels["x1"] = x * actual_voxel_width
+        self.voxels["x2"] = self.voxels["x1"] + actual_voxel_width
+        self.voxels["y1"] = y * actual_voxel_length
+        self.voxels["y2"] = self.voxels["y1"] + actual_voxel_length
+        self.voxels["z1"] = z * voxel_height
+        self.voxels["z2"] = self.voxels["z1"] + voxel_height
+
+        self.voxel_dx = actual_voxel_width
+        self.voxel_dy = actual_voxel_length
+        self.voxel_dz = voxel_height
+
+        self.voxel_grid_to_self("voxel_volume", voxel_volume)
+
+        for name in self.state_variables + self.inputs:
+            if name != "voxel_volume":
+                self.voxel_grid_to_self(name, init_value=getattr(self, name))
+
+        # Set an heterogeneity uppon the mean background
+        # Nitrogen
+        self.add_patch_repartition_to_soil(property_name="dissolved_mineral_N", patch_value=self.dissolved_mineral_N_patch, 
+                                           z_loc=self.patch_depth_mineralN, 
+                                           z_width=self.patch_uniform_width_mineralN, 
+                                           z_dev=self.patch_transition_mineralN)
+        # Water
+        self.add_patch_repartition_to_soil(property_name="soil_moisture", patch_value=self.water_moisture_patch, 
+                                           z_loc=self.patch_depth_water_moisture, 
+                                           z_width=self.patch_uniform_width_water_moisture, 
+                                           z_dev=self.patch_transition_water_moisture)
+
+        # TODO: Add utility for layered stratification, for example for clay percentage
+        
+        # Initialize volumic concentrations
+        self.voxels["dry_soil_mass"] = 1e6 * self.voxels["voxel_volume"] * self.voxels["bulk_density"]
+        self.voxels["water_volume"] = self.voxels["voxel_volume"] * self.voxels["soil_moisture"]
+        self.voxels["C_mineralN_soil"] = self.voxels["dissolved_mineral_N"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 14
+        self.voxels["C_amino_acids_soil"] = self.voxels["DON"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 14
+        self.voxels["C_hexose_soil"] = self.voxels["DOC"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 6 / 12
+        self.voxels["Cv_solutes_soil"] = self.voxels["C_mineralN_soil"] # Until we are sure of proper initialization and balance of these different concentrations
+
+        # Initiate the transport model
+        self.initiate_cmf(nx=self.voxel_number_x, ny=self.voxel_number_y, nz=self.voxel_number_z,
+                          dx=voxel_length, dy=voxel_length, dz=voxel_height)
+
+        self.mimics = MIMICS_CN(time_step_in_hours=self.time_step / 3600,
+                                clay_percentage=self.voxels["clay_percentage"])
+        self.mimics_cn_states()
+
+
+    def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
+        # 1. Create a project with transported solutes
+        # self.cmf_accounted_solutes = ["DOC", "DON", "dissolved_mineral_N"] # Manual
+        self.cmf_accounted_solutes = ["dissolved_mineral_N"] # Manual
+
+        # Specific sting formating to create project in CMF (space separator between solutes)
+        solute_string = ''
+        for k in range(len(self.cmf_accounted_solutes)):
+            solute_string += self.cmf_accounted_solutes[k]
+            if k < len(self.cmf_accounted_solutes) - 1:
+                solute_string += ' '
+
+        self.cmf_project = cmf.project(solute_string)
+        # nitrate , _ , _ = self.cmf_project.solutes
+        nitrate, = self.cmf_project.solutes
+
+        # Retention curve with soil parameters
+        self.r_curve=cmf.VanGenuchtenMualem(Ksat=self.saturated_hydraulic_conductivity, # m.day-1
+                                        theta_r=self.theta_R,
+                                        phi=self.theta_S, # theta_s
+                                        alpha=self.water_alpha, 
+                                        n=self.water_n) # Example for loam
+
+        # 2. Build a cubic voxel grid
+        self.cmf_id_grid = np.arange(nx * ny).reshape((nx, ny))
+        symetry = True # TODO : add as parameter
+        real_3D = True # TODO : add as parameter
+        solve_tolerance = 1e-9 * 1e3
+
+        self.cmf_cells = {}
+        cell_id = 0
+        # Like in STICS, we create a "cell", i.e. a surface element with several layers
+        for ix in range(nx):
+            for iy in range(ny):
+                cell = self.cmf_project.NewCell(x=ix*dx, y=iy*dy, z=0, area=dx*dy)
+                for iz in range(nz):
+                    depth = (iz+1)*dz
+                    cell.add_layer(depth, self.r_curve)
+                cell.install_connection(cmf.Richards)
+                # We store cells in a dictionnary to be able to connect them when we want to simulate a real 3D grid
+                self.cmf_cells[self.cmf_id_grid[ix, iy]] = cell
+                cell_id += 1
+
+        # 3. Create connections between cells
+        for ix in range(nx):
+            for iy in range(ny):
+                cell = self.cmf_cells[self.cmf_id_grid[ix, iy]]
+                # Row neighbor (x+1 on same column iy)
+                if ix < nx-1:
+                    cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix + 1, iy]], dx)
+                else:
+                    if symetry:
+                        # If scene is symetrical the last element in row is neighbor to first element in row
+                        cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[0, iy]], dx)
+                
+                # Column neighbor (y+1)
+                if iy < ny-1:
+                    cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, iy + 1]], dx)
+                else:
+                    if symetry:
+                        # If scene is symetrical the last element in column is neighbor to first element in column
+                        cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, 0]], dx)
+
+        # (3bis OPTIONAL) If the scene is real 3D, we install connections with lateral richards flux and advection 
+        if real_3D:
+            cmf.connect_cells_with_flux(self.cmf_project, cmf.Richards_lateral)
+
+        
+        # 4. Set initial conditions
+
+        # Retreive volumic concentrations of solutes from initialized massic concentrations
+        volumic_concentrations = {}
+        for solute_name in self.cmf_accounted_solutes:
+            volumic_concentrations[solute_name] = self.voxels[solute_name] * self.voxels["dry_soil_mass"] / (self.voxels["soil_moisture"] * self.voxels["voxel_volume"])
+
+        # Dynamic storage of rainfall nodes for each cells
+        self.rainfall_nodes = {}
+        for ix in range(nx):
+            for iy in range(ny):
+                cell = self.cmf_cells[self.cmf_id_grid[ix, iy]]
+
+                # Null at first, just to instantiate the object
+                rs = cmf.ConstantRainSource(self.cmf_project, cmf.point(0, 0, 0), 0)
+                rs.set_conc(nitrate, 0)
+                cell.rain_source = rs
+                self.rainfall_nodes[self.cmf_id_grid[ix, iy]] = rs
+
+                for iz, l in enumerate(cell.layers):
+                    l.theta = self.voxels["soil_moisture"][iy, iz, ix]
+                    l.potential = self.r_curve.MatricPotential(l.theta) # Must be initialized
+                    for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
+                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
+            
+            # Groundwater table boundary condition 
+            self.ground_water_theta = 0.1 # TODO : add as a varying input
+            cell.layers[-1].theta = self.ground_water_theta
+            cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
+
+        # 5. Set up integrators (water + solute)
+        water_integrator = cmf.ImplicitEuler(self.cmf_project, solve_tolerance)
+        solute_integrator = cmf.CVodeKrylov(self.cmf_project, solve_tolerance)
+        self.cmf_solver = cmf.SoluteWaterIntegrator(self.cmf_project.solutes, solute_integrator, water_integrator, self.cmf_project)
+
+    def voxel_grid_to_self(self, name, init_value):
+        self.voxels[name] = np.zeros((self.voxel_number_y, self.voxel_number_z, self.voxel_number_x))
+        self.voxels[name].fill(init_value)
+        #setattr(self, name, self.voxels[name])
+    
+
+    def add_patch_repartition_to_soil(self, property_name: str, patch_value: float, x_loc=None, y_loc=None, z_loc=None, 
+                                                                        x_width=0, y_width=0, z_width=0, 
+                                                                        x_dev=1e-3, y_dev=1e-3, z_dev=1e-3,
+                                                                        spherical_normal_patch = False, normal_boundaries = False):
+        
+        if spherical_normal_patch:
+            y_dev = x_dev
+            z_dev = x_dev
+            x_width = 0
+            y_width = 0
+            z_width = 0
+        
+        # Start with Z
+        if z_loc is not None:
+            
+            z_mean = (self.voxels["z1"] + self.voxels["z2"]) / 2
+
+            test = np.logical_and(z_loc - z_width/2 < z_mean, z_mean < z_loc + z_width/2)
+            self.voxels[property_name][test] = patch_value
+            if normal_boundaries:
+                test = z_mean > z_loc + z_width/2
+                new_values = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (z_dev * np.sqrt(2 * np.pi)) * np.exp(-((z_mean - (z_loc + z_width/2)) ** 2) / (2 * z_dev ** 2))
+                self.voxels[property_name][test] = new_values[test]
+                test = z_mean < z_loc - z_width/2
+                new_values = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (z_dev * np.sqrt(2 * np.pi)) * np.exp(-((z_mean - (z_loc - z_width/2)) ** 2) / (2 * z_dev ** 2))
+                self.voxels[property_name][test] = new_values[test]
+
+        # Then x and y
+        if x_loc is not None:
+            x_mean = (self.voxels["x1"] + self.voxels["x2"]) / 2
+
+            self.voxels[property_name][x_loc - x_width/2 < x_mean < x_loc + x_width/2] = patch_value
+            self.voxels[property_name][x_mean > x_loc + x_width/2] = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (x_dev * np.sqrt(2 * np.pi)) * np.exp(-((x_mean - (x_loc + x_width/2)) ** 2) / (2 * x_dev ** 2))
+            self.voxels[property_name][x_mean < x_loc - x_width/2] = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (x_dev * np.sqrt(2 * np.pi)) * np.exp(-((x_mean - (x_loc - x_width/2)) ** 2) / (2 * x_dev ** 2))
+
+        if y_loc is not None:
+            y_mean = (self.voxels["y1"] + self.voxels["y2"]) / 2
+
+            self.voxels[property_name][y_loc - y_width/2 < y_mean < y_loc + y_width/2] = patch_value
+            self.voxels[property_name][y_mean > y_loc + y_width/2] = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (y_dev * np.sqrt(2 * np.pi)) * np.exp(-((y_mean - (y_loc + y_width/2)) ** 2) / (2 * y_dev ** 2))
+            self.voxels[property_name][y_mean < y_loc - y_width/2] = self.voxels[property_name] + (patch_value - self.voxels[property_name]) / (y_dev * np.sqrt(2 * np.pi)) * np.exp(-((y_mean - (y_loc - y_width/2)) ** 2) / (2 * y_dev ** 2))
+
+
+    def compute_mtg_voxel_neighbors(self, props):
+
+        # necessary to get updated coordinates.
+        # if "angle_down" in g.properties().keys():
+        #     plot_mtg(g)
+
+        for vid in props["vertex_index"].keys():
+            if (vid not in props["voxel_neighbor"].keys()) or (props["voxel_neighbor"][vid] is None) or (props["length"][vid] > props["initial_length"][vid]):
+                baricenter = (np.mean((props["x1"][vid], props["x2"][vid])) % self.scene_xrange, # min value is 0
+                            np.mean((props["y1"][vid], props["y2"][vid])) % self.scene_yrange, # min value is 0
+                            -np.mean((props["z1"][vid], props["z2"][vid])))
+                testx1 = self.voxels["x1"] <= baricenter[0]
+                testx2 = baricenter[0] <= self.voxels["x2"]
+                testy1 = self.voxels["y1"] <= baricenter[1]
+                testy2 = baricenter[1] <= self.voxels["y2"]
+                testz1 = self.voxels["z1"] <= baricenter[2]
+                testz2 = baricenter[2] <= self.voxels["z2"]
+                test = testx1 * testx2 * testy1 * testy2 * testz1 * testz2
+                try:
+                    props["voxel_neighbor"][vid] = [int(v) for v in np.where(test)]
+                except:
+                    print(" WARNING, issue in computing the voxel neighbor for vid ", vid)
+                    props["voxel_neighbor"][vid] = None
+        
+        return props
+    
+    def compute_mtg_voxel_neighbors_fast(self, data, hs, mask,
+                                         xmin=0, ymin=0, zmin=0,
+                                        periodic_xy=True, flip_z=False):
+        
+        # barycenters (vectorized)
+        bx = 0.5 * (data[hs["x1"]] + data[hs["x2"]])
+        by = 0.5 * (data[hs["y1"]] + data[hs["y2"]])
+        bz = 0.5 * (data[hs["z1"]] + data[hs["z2"]])
+
+        # The integer indices of the vertices where the boolean mask need is True
+        # idx = np.nonzero(mask)[0]
+        # xs, ys, zs = bx[idx], by[idx], bz[idx]
+        xs, ys, zs = bx[mask], by[mask], bz[mask]
+
+        # grid params
+        Ny, Nz, Nx = self.voxel_number_y, self.voxel_number_z, self.voxel_number_x
+        dx, dy, dz = self.voxel_dx, self.voxel_dy, self.voxel_dz
+
+        if flip_z:
+            zs = -zs
+        
+        if periodic_xy:
+            Lx, Ly = Nx * dx, Ny * dy
+            xs = (xs - xmin) % Lx + xmin
+            ys = (ys - ymin) % Ly + ymin
+
+        ix = np.floor((xs - xmin) / dx).astype(np.int32)
+        iy = np.floor((ys - ymin) / dy).astype(np.int32)
+        iz = np.floor((zs - zmin) / dz).astype(np.int32)
+
+        # clamp to valid range (if not periodic or due to tiny FP drift)
+        np.clip(ix, 0, Nx - 1, out=ix)
+        np.clip(iy, 0, Ny - 1, out=iy)
+        np.clip(iz, 0, Nz - 1, out=iz)
+
+        return iy, iz, ix
+    
+    
+    def apply_to_voxel(self, props):
+        """
+        This function computes the flow perceived by voxels surrounding the considered root segment.
+        Note : not tested for now, just computed to support discussions.
+
+        :param element: the considered root element.
+        :param root_flows: The root flows to be perceived by soil voxels. The underlying assumptions are that only flows, i.e. extensive variables are passed as arguments.
+        :return:
+        """
+
+        for name in self.inputs:
+            self.voxels[name].fill(0)
+        
+        for vid in props["vertex_index"].keys():
+            if props["length"][vid] > 0:
+                if props["voxel_neighbor"][vid] is not None:
+                    vy, vz, vx = props["voxel_neighbor"][vid]
+                    for name in self.inputs:
+                        # print(name,  props[name])
+                        self.voxels[name][vy][vz][vx] += props[name][vid]
+                else:
+                    print(f"WARNING! segment {vid} did not send its status to the soil")
+
+
+    def apply_to_voxel_fast(self, iy, iz, ix, data, hs, model_name, mask):
+        for name in self.inputs:
+            self.voxels[name].fill(0.)
+            
+            if name in self.pullable_inputs[model_name]:
+                source_variables = self.pullable_inputs[model_name][name]
+                to_apply = np.zeros(mask.sum(), dtype=np.float64)
+                for variable, unit_conversion in source_variables.items():
+                    to_apply += unit_conversion * data[hs[variable]][mask]
+            else:
+                to_apply = data[hs[name]][mask]
+
+            np.add.at(self.voxels[name], (iy, iz, ix), to_apply) 
+
+            # print(name, self.voxels[name].sum())
+
+
+    def get_from_voxel(self, props, soil_outputs):
+        """
+        This function computes the soil states from voxels perceived by the considered root segment.
+        Note : not tested for now, just computed to support discussions.
+
+        :param element: the considered root element.
+        :param soil_states: The soil states to be perceived by soil voxels. The underlying assumptions are that only intensive extensive variables are passed as arguments.
+        :return:
+        """
+        for vid, (vy, vz, vx) in props["voxel_neighbor"].items():
+            for name in soil_outputs:
+                if name != "voxel_neighbor":
+                    props[name][vid] = self.voxels[name][vy][vz][vx]
+        
+        return props
+
+    def get_from_voxel_fast(self, iy, iz, ix, data, hs, soil_outputs, mask):
+        # cols = np.flatnonzero(mask)
+        # Nx, Nz = self.voxel_number_x, self.voxel_number_z
+        # linear_index = ((iy * Nz + iz) * Nx + ix)
+        # print("idx shape", ix.shape)
+        # print(linear_index.shape)
+        for name in soil_outputs:
+            # print('vs assigned', self.voxels[name].ravel())
+            # print(name, ix[cols].shape, data[hs[name], mask].shape, self.voxels[name][iy, iz, ix].shape)
+            data[hs[name], mask] = self.voxels[name][iy, iz, ix]
+            # print(name, data[hs[name], :])
+            
+
+
+    def pull_available_inputs(self, props, model_name):
+        # vertices = props["vertex_index"].keys()
+        vertices = [vid for vid in props["vertex_index"].keys() if props["living_struct_mass"][vid] > 0]
+        
+        for input, source_variables in self.pullable_inputs[model_name].items():
+            if input not in props:
+                props[input] = {}
+            # print(input, source_variables)
+            props[input].update({vid: sum([props[variable][vid]*unit_conversion 
+                                           for variable, unit_conversion in source_variables.items()]) 
+                                 for vid in vertices})
+        return props
+
+    
+    def __call__(self, queue_plants_to_soil, queues_soil_to_plants, soil_outputs: list=[], *args):
+
+        # We get fluxes and voxel interception from the plant mtgs (If none passed, soil model can be autonomous)
+        # Waiting for all plants to put their outputs
+        t1 = time.time()
+
+        batch = []
+        for _ in range(len(queues_soil_to_plants)):
+            plant_data = queue_plants_to_soil.get()
+            batch.append(plant_data)
+
+            # Deplaced here because if one plant hangs, their is not reason not to retreive others in the meantime
+            self.get_from_plant(plant_data)
+        
+        t2 = time.time()
+        if debug: print("soil waits plants: ", t2 - t1)
+
+        # Run the soil model
+        self.choregrapher(module_family=self.__class__.__name__, *args)
+
+        homogeneize_properties = False
+        if homogeneize_properties:
+            v = self.voxels
+            v["dissolved_mineral_N"] = np.ones_like(v["dissolved_mineral_N"]) * (v["dissolved_mineral_N"] * (v["dry_soil_mass"])).sum() / (v["dry_soil_mass"]).sum()
+            v["C_mineralN_soil"] = v["dissolved_mineral_N"] * (v["dry_soil_mass"] / (v["soil_moisture"] * v["voxel_volume"])) / 14 
+
+        t3 = time.time()
+        if debug: print("soil solve: ", t3 - t2)
+
+        for plant_data in batch:
+            plant_id = plant_data["plant_id"]
+
+            self.send_to_plant(plant_data, soil_outputs)
+            
+            # Send a message to plants so that they can resume with last soil state
+            queues_soil_to_plants[plant_id].put("finished")
+        
+        t4 = time.time()
+        if debug: print("soil sends plants: ", t4 - t3)
+
+    def get_from_plant(self, plant_data):
+        """
+        TODO : probably transfer to composite
+        """
+        # Unpacking message
+        plant_id = plant_data["plant_id"]
+        model_name = plant_data["model_name"]
+        shm = SharedMemory(name=plant_id)
+        buf = np.ndarray((35, 20000), dtype=np.float64, buffer=shm.buf)
+        hs = plant_data["handshake"]
+        vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
+
+        iy, iz, ix = self.compute_mtg_voxel_neighbors_fast(buf, hs, mask=vertices_mask, flip_z=True)
+        self.apply_to_voxel_fast(iy, iz, ix, buf, hs, model_name, vertices_mask)
+        # Stored for sending to plants later
+        self.voxel_neighbor[plant_id] = (iy, iz, ix)
+
+        shm.close()
+
+        # Legacy code commented
+        # props = plant_data["data"]
+        # props = self.pull_available_inputs(props, model_name)
+        # props = self.compute_mtg_voxel_neighbors(props)
+        # self.apply_to_voxel(props)
+        # voxel_neighbors[id] = props["voxel_neighbor"]
+
+
+    def send_to_plant(self, plant_data, soil_outputs):
+        """
+        TODO : probably transfer to composite
+        """
+        # Then apply the states to the plants
+        plant_id = plant_data["plant_id"]
+        hs = plant_data["handshake"]
+        shm = SharedMemory(name=plant_id)
+        buf = np.ndarray((35, 20000), dtype=np.float64, buffer=shm.buf)
+        vertices_mask = buf[hs["vertex_index"]] >= 1 # WARNING: convention
+        self.get_from_voxel_fast(*self.voxel_neighbor[plant_id], buf, hs, soil_outputs, vertices_mask)
+
+        shm.close()
+
+        # legacy_code_commented
+        # # EDIT : removed modification of the input props, there should be no variable link between inputs and outputs, excepted voxel neighbors for interception 
+        # outputs = {name: {} for name in soil_outputs}
+        # outputs["voxel_neighbor"] = vn
+        # outputs = self.get_from_voxel(outputs, soil_outputs=soil_outputs)
+
+    
+    # MODEL EQUATIONS
+    def soil_moisture_capacity(self, psi):
+        """
+        Specific moisture capacity function, C(psi)
+        Derivarion of the soil_moisture function
+        """
+        m = 1 - 1/self.water_n
+        return (self.theta_S - self.theta_R) * self.water_alpha * self.water_n * m * (((self.water_alpha * np.abs(psi))**(self.water_n - 1)) /
+                                                                                     ((1 + (self.water_alpha * np.abs(psi))**self.water_n)**(m + 1)))
+
+    def soil_water_conductivity(self, theta):
+        """
+        Compute water conductivity at each point as function of soil moisture according to the van Genuchten-Mualem Model
+        """
+        m = 1-1/self.water_n
+        Se = (theta - self.theta_R) / (self.theta_S - self.theta_R)
+        return self.saturated_hydraulic_conductivity * Se**0.5 * (1 - (1 - Se**(1/m))**m)**2
+    
+    def _soil_moisture(self, water_potential_soil):
+        m = 1 - (1/self.water_n)
+        return self.theta_R + (self.theta_S - self.theta_R) / (1 + np.abs(self.water_alpha * water_potential_soil)**self.water_n) ** m
+
+    @potential
+    @rate
+    def cmf_transport(self):
+        """
+        Water and solute transport based on the CMF model
+        """
+        rain_intensity = self.voxels["rain_intensity"][0, 0, 0] * 24 # mm.day-1 are used by cmf : https://philippkraft.github.io/cmf/cmf_tut_meteostation.html?utm_source=chatgpt.com
+        mineral_N_fertilization_amount = self.voxels["mineral_N_fertilization_rate"][0, 0, 0] * self.time_step # gN
+        fertilization_volume = self.scene_xrange * self.scene_yrange * rain_intensity / 24 / 1e3 # m3 for current hour, # NOTE should be included in rain input time series
+        fertigation_no3 = mineral_N_fertilization_amount / fertilization_volume if fertilization_volume > 0. else 0.
+        print(rain_intensity, fertigation_no3)
+
+        # First retreive volumic concentrations of solutes from CN-biochem model
+        volumic_concentrations = {}
+        for solute_name in self.cmf_accounted_solutes:
+            volumic_concentrations[solute_name] = self.voxels[solute_name] * self.voxels["dry_soil_mass"] / (self.voxels["soil_moisture"] * self.voxels["voxel_volume"])
+
+        # Adjust inputs for this specific time step
+        for ix in range(self.voxel_number_x):
+            for iy in range(self.voxel_number_y):
+                cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
+                self.rainfall_nodes[self.cmf_id_grid[ix][iy]].intensity = rain_intensity
+                self.rainfall_nodes[self.cmf_id_grid[ix][iy]].set_conc(self.cmf_project.solutes[self.cmf_accounted_solutes.index("dissolved_mineral_N")], fertigation_no3)
+                cell.layers[-1].theta = self.ground_water_theta 
+                cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
+
+                for iz, l in enumerate(cell.layers):
+                    for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
+                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
+
+        # Even for a single time_step, solver needs to iterate to actually run on its own
+        [t for t in self.cmf_solver.run(self.cmf_solver.t, self.cmf_solver.t + cmf.h * self.time_step/3600, cmf.h * self.time_step/3600)]
+
+        # 7. Extract results as NumPy arrays
+        # TODO : optimization only because this already runs well, but in theory, accessing arrays through indices is highly unefficient and cmf fully with arrays would be better, but didn't find how to do it yet
+        for ix in range(self.voxel_number_x):
+            for iy in range(self.voxel_number_y):
+                cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
+                for iz, l in enumerate(cell.layers):
+                    self.voxels["soil_moisture"][iy, iz, ix] = l.theta
+                    self.voxels["water_potential_soil"][iy, iz, ix] = (l.potential - l.position[2]) * 1000 * 9.81 # Convert to Pa
+                    for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
+                        self.voxels[solute_name][iy, iz, ix] = l.conc(solute) * (self.voxels["soil_moisture"][iy, iz, ix] * self.voxels["voxel_volume"][iy, iz, ix]) / self.voxels["dry_soil_mass"][iy, iz, ix]
+                    
+    @actual
+    @state
+    def mimics_cn_states(self):
+        soil_temperature = self.voxels["soil_temperature"]
+        voxel_volume = self.voxels["voxel_volume"]
+        dry_soil_mass = self.voxels["dry_soil_mass"]
+        DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
+        DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+        dissolved_mineral_N = self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+
+        net_N_uptake = 1e3 * 3600 * (
+            self.voxels["mineralN_uptake"] 
+            - self.voxels["mineralN_diffusion_from_roots"] 
+            - self.voxels["mineralN_diffusion_from_xylem"]) / voxel_volume / 1e6 # gN.s-1 to mgN/cm3/h
+        
+        C_rhizodeposition = ((self.voxels["hexose_exudation"] 
+                             + self.voxels["phloem_hexose_exudation"] 
+                             + self.voxels["mucilage_secretion"]
+                             + self.voxels["amino_acids_diffusion_from_roots"] 
+                             + self.voxels["amino_acids_diffusion_from_xylem"] 
+                             - self.voxels["amino_acids_uptake"]
+                             ) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
+
+        C_cells = (self.voxels["cells_release"] / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
+        averaged_litter_input = 10 # mg.cm-3.y-1
+
+
+        N_rhizodeposition = (((self.voxels["amino_acids_diffusion_from_roots"] 
+                             + self.voxels["amino_acids_diffusion_from_xylem"] 
+                             - self.voxels["amino_acids_uptake"]) / self.CN_ratio_amino_acids) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gN.s-1 to mgN.cm-3.y-1
+        
+        CN_rhizodeposition = np.where(N_rhizodeposition > 0., C_rhizodeposition / np.where(N_rhizodeposition == 0., 1., N_rhizodeposition), 1e3) # TODO: Check for a realistic max
+
+        # TODO: CAREFULL, reverse fluxes deactivated for now!!
+        self.mimics(soil_temperature=soil_temperature,
+                    labile_OC=DOC, # Expects mgC/cm3
+                    labile_ON=DON, 
+                    labile_IN=dissolved_mineral_N, 
+                    net_N_uptake=np.maximum(net_N_uptake, 0.), 
+                    litter_inputs=np.where(C_cells <= 0., averaged_litter_input, C_cells), 
+                    litter_CN=np.full_like(C_cells, self.CN_ratio_amino_acids), # TODO: would also need to estimate CN root cells
+                    rhizodeposits_inputs=np.where(C_rhizodeposition <=0., averaged_litter_input, C_rhizodeposition),
+                    rhizodeposits_CN=CN_rhizodeposition)
+
+        concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
+        self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
+        self.voxels["DOC"] = self.mimics.Litter_DOC * concentrations_conversion
+        self.voxels["DON"] = self.mimics.Litter_DON * concentrations_conversion
+        # TODO: log available
+        self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
+        self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
+        self.voxels["POC"] = self.mimics.SOC_chemical * concentrations_conversion
+        self.voxels["PON"] = self.mimics.SON_chemical * concentrations_conversion
+        self.voxels["microbial_C"] = (self.mimics.MBC_r + self.mimics.MBC_K) * concentrations_conversion
+        self.voxels["microbial_N"] = (self.mimics.MBN_r + self.mimics.MBN_K) * concentrations_conversion
+
+    
+    @actual
+    @rate
+    def _voxel_mineral_N_fertilization(self, mineral_N_fertilization_rate, dry_soil_mass):
+        return dry_soil_mass * mineral_N_fertilization_rate.mean() / dry_soil_mass.sum()
+
+
+    @rate
+    def _mineral_N_net_mineralization(self, soil_temperature, voxel_volume):
+        """CN-Wheat mineralization function"""
+        
+        # First temperature effect on Vmax
+        Tref = 20 + 273.15
+        Tk = soil_temperature + 273.15
+        R = 8.3144  #: Physical parameter: Gas constant (J mol-1 K-1)
+        deltaHa = 55  # 89.7  #: Enthalpie of activation of parameter pname (kJ mol-1)
+        deltaS = 0.48  # 0.486  #: entropy term of parameter pname (kJ mol-1 K-1)
+        deltaHd = 154  # 149.3 #: Enthalpie of deactivation of parameter pname (kJ mol-1)
+
+        f_activation = np.exp((deltaHa * (Tk - Tref)) / (R * 1E-3 * Tref * Tk))  #: Energy of activation (normalized to unity)
+
+        f_deactivation = (1 + np.exp((Tref * deltaS - deltaHd) / (Tref * R * 1E-3))) / (1 + np.exp((Tk * deltaS - deltaHd) / (Tk * R * 1E-3)))  #: Energy of deactivation (normalized to unity)
+
+        T_effect_Vmax = f_activation * f_deactivation
+
+        mineralization_rate = 2.05e-6 / 1e6 # mol N nitrates m-3 s-1
+        return 44.44 * mineralization_rate * voxel_volume * T_effect_Vmax * 14 # expecting gN g-1 of soil # NOTE : 44 factor specific to small soil volume to match rates of CN-Wheat!
+    
+    
+    # @state
+    def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, voxel_mineral_N_fertilization):
+        balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
+            # mineral_N_net_mineralization
+            # + mineralN_diffusion_from_roots
+            # + mineralN_diffusion_from_xylem
+            # - mineralN_uptake
+            + voxel_mineral_N_fertilization
+            )
+        
+        balance[balance < 0] = 0
+
+        return balance
+
+    # @note Post state coupling variables
+
+    @segmentation
+    @state
+    def _C_mineralN_soil(self, dissolved_mineral_N, dry_soil_mass, soil_moisture, voxel_volume):
+        return dissolved_mineral_N * (dry_soil_mass / (soil_moisture * voxel_volume)) / 14
+
+    #TP@segmentation
+    #TP@state
+    def _C_amino_acids_soil(self, DOC, dry_soil_mass, soil_moisture, voxel_volume):
+        return DOC * (dry_soil_mass * (soil_moisture / voxel_volume)) / 12 / self.ratio_C_per_amino_acid
+    
+    @segmentation
+    @state
+    def _C_hexose_soil(self, DOC, dry_soil_mass, soil_moisture, voxel_volume):
+        return DOC * (dry_soil_mass * (soil_moisture * voxel_volume)) / 12 / 6
+    
+    #TP@state
+    def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):
+        balance = Cs_mucilage_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
+            mucilage_secretion
+            - mucilage_degradation
+        )
+        balance[balance < 0.] = 0.
+        return balance
+    
+    #TP@state
+    def _Cs_cells_soil(self, Cs_cells_soil, soil_moisture, voxel_volume, cells_release, cells_degradation):
+        balance = Cs_cells_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
+                cells_release
+                - cells_degradation
+        )
+        balance[balance < 0.] = 0.
+        return balance
+    
+    @postsegmentation
+    @state
+    def _Cv_solutes_soil(self, C_hexose_soil, Cs_mucilage_soil, Cs_cells_soil, C_mineralN_soil, C_amino_acids_soil):
+        # return C_hexose_soil + Cs_mucilage_soil + Cs_cells_soil + C_mineralN_soil + C_amino_acids_soil + self.C_solutes_background # Commented until we are sure of proper initialization and balance of these different concentrations
+        return C_mineralN_soil
+    
+    @state
+    def _water_volume(self, soil_moisture, voxel_volume):
+        return soil_moisture * voxel_volume
+    
+    @state
+    def _water_potential_soil(self, voxel_volume, water_volume):
+        """
+        Water retention curve from van Genuchten 1980
+        """
+        m = 1 - (1/self.water_n)
+        return - (1 / self.water_alpha) * (
+                                            ((self.theta_S - self.theta_R) / ((water_volume / voxel_volume) - self.theta_R)) ** (1 / m) - 1 
+                                        )** (1 / self.water_n)
+
+
+    def temperature_modification(self, soil_temperature=15, process_at_T_ref=1., T_ref=0., A=-0.05, B=3., C=1.):
+        """
+        This function calculates how the value of a process should be modified according to soil temperature (in degrees Celsius).
+        Parameters correspond to the value of the process at reference temperature T_ref (process_at_T_ref),
+        to two empirical coefficients A and B, and to a coefficient C used to switch between different formalisms.
+        If C=0 and B=1, then the relationship corresponds to a classical linear increase with temperature (thermal time).
+        If C=1, A=0 and B>1, then the relationship corresponds to a classical exponential increase with temperature (Q10).
+        If C=1, A<0 and B>0, then the relationship corresponds to bell-shaped curve, close to the one from Parent et al. (2010).
+        :param T_ref: the reference temperature
+        :param A: parameter A (may be equivalent to the coefficient of linear increase)
+        :param B: parameter B (may be equivalent to the Q10 value)
+        :param C: parameter C (either 0 or 1)
+        :return: the new value of the process
+        """
+        # We compute a temperature-modified process, correspond to a Q10-modified relationship,
+        # based on the work of Tjoelker et al. (2001):
+        if C != 0 and C != 1:
+            print("The modification of the process at T =", soil_temperature,
+                  "only works for C=0 or C=1!")
+            print("The modified process has been set to 0.")
+            return np.zeros_like(soil_temperature)
+
+        modified_process = process_at_T_ref * (A * (soil_temperature - T_ref) + B) ** (1 - C) \
+                           * (A * (soil_temperature - T_ref) + B) ** (
+                                   C * (soil_temperature - T_ref) / 10.)
+        
+        if C == 1:
+            modified_process[(A * (soil_temperature - T_ref) + B) < 0.] = 0.
+
+        modified_process[modified_process < 0.] = 0.
+
+        return modified_process

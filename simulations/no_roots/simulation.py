@@ -65,6 +65,6 @@ def simulate_scenarios(scenarios, simulation_length=2500, echo=True, log_setting
 
 
 if __name__ == '__main__':
-    scenarios = ms.from_table(file_path="inputs/Scenarios_24_11_10.xlsx", which=["RhizoSoil_1"])
+    scenarios = ms.from_table(file_path="inputs/Scenarios_25-07-30.xlsx", which=["RhizoSoil_1"])
     simulate_scenarios(scenarios, simulation_length=2500, log_settings=Logger.heavy_log)
     

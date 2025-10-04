@@ -357,7 +357,7 @@ def FXEQ_grid(state,
         (1-NUE)*(LITminN_1 + LITminN_2 + SOMminN_1) +  #Inputs from r decomp
         (1-NUE)*(LITminN_3 + LITminN_4 + SOMminN_2) +  #Inputs from K decomp
         Nspill_1 + Nspill_2 - DINup_1 - DINup_2    #Uptake to microbial pools and spillage
-        - RootUptakeIN # Roots uptake
+        - RootUptakeIN # Roots uptake mgN/cm3/h
     )
 
     if leaching:
@@ -488,8 +488,8 @@ class MIMICS_CN:
         
         # TODO cache parameters that do no vary with these inputs
         parameters = get_parameters_rhizodeposits_grid(
-            annual_NPP_C = litter_inputs, # gC/m2/y
-            annual_RD_C = rhizodeposits_inputs, # gC/m2/y
+            annual_NPP_C = litter_inputs, # mgC/cm3/y
+            annual_RD_C = rhizodeposits_inputs, # mgC/cm3/y
             clay_pct = self.clay_percentage, # %
             Tsoil = soil_temperature, # Celsius
             input_RD_CN = rhizodeposits_CN, # adim
@@ -501,6 +501,66 @@ class MIMICS_CN:
         np.maximum(state, 0.0, out=state)
 
     
+    @property
+    def Litter_DOC(self):
+        return self.state[0]
+    
+    @property
+    def Litter_POC(self):
+        return self.state[1]
+    
+    @property
+    def MBC_r(self):
+        return self.state[2]
+    
+    @property
+    def MBC_K(self):
+        return self.state[3]
+    
+    @property
+    def SOC_physical(self):
+        return self.state[4]
+    
+    @property
+    def SOC_chemical(self):
+        return self.state[5]
+    
+    @property
+    def SOC_available(self):
+        return self.state[6]
+    
+    @property
+    def Litter_DON(self):
+        return self.state[7]
+    
+    @property
+    def Litter_PON(self):
+        return self.state[8]
+    
+    @property
+    def MBN_r(self):
+        return self.state[9]
+    
+    @property
+    def MBN_K(self):
+        return self.state[10]
+    
+    @property
+    def SON_physical(self):
+        return self.state[11]
+    
+    @property
+    def SON_chemical(self):
+        return self.state[12]
+    
+    @property
+    def SON_available(self):
+        return self.state[13]
+    
+    @property
+    def DIN(self):
+        return self.state[14]
+
     
     def _find_steady_state(self, func, x0, bounds=(None,None), name='C'):
         """
