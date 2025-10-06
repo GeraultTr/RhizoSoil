@@ -191,8 +191,8 @@ class SoilModel(Model):
     dry_soil_mass: float = declare(default=1.42, unit="g", unit_comment="", description="dry weight of the considered voxel element", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
-    clay_percentage: float = declare(default=30, unit="%", unit_comment="", description="clay percentage of voxel", 
-                                        value_comment="", references="", DOI="",
+    clay_percentage: float = declare(default=12.3, unit="%", unit_comment="", description="clay percentage of voxel", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     
     # --- @note RATES INITIALIZATION ---
@@ -219,41 +219,20 @@ class SoilModel(Model):
     g_acceleration: float = declare(default=9.806, unit="m.s-2", unit_comment="", description="gravitationnal acceleration constant", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="extensive", edit_by="user")
-    saturated_hydraulic_conductivity: float = declare(default=0.24, unit="adim", unit_comment="m.day-1", description="staturated hydraulic conductivity parameter", 
-                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+    saturated_hydraulic_conductivity: float = declare(default=0.2653, unit="adim", unit_comment="m.day-1", description="staturated hydraulic conductivity parameter", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    theta_R: float = declare(default=0.0835, unit="adim", unit_comment="m3.m-3", description="Soil retention moisture", 
-                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+    theta_R: float = declare(default=0.0602, unit="adim", unit_comment="m3.m-3", description="Soil retention moisture", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    theta_S: float = declare(default=0.4383, unit="adim", unit_comment="m3.m-3", description="Soil saturation moisture", 
-                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+    theta_S: float = declare(default=0.4509, unit="adim", unit_comment="m3.m-3", description="Soil saturation moisture", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    water_alpha: float = declare(default=0.0138, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
-                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
+    water_alpha: float = declare(default=0.0048, unit="cm-1", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    water_n: float = declare(default=1.3945, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
-                                        value_comment="", references="clay loam estimated with Hydrus, bulk density = 1.42", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    field_capacity: float = declare(default=0.36, unit="adim", unit_comment="", description="Soil moisture at which soil doesn't retain water anymore.", 
-                                        value_comment="", references="Cornell university, case of sandy loam soil", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    permanent_wilting_point: float = declare(default=0.065, unit="adim", unit_comment="", description="Soil moisture at which soil doesn't retain water anymore.", 
-                                        value_comment="", references="Cornell university, case of sandy loam soil", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    water_dt: float = declare(default=3600, unit="s", unit_comment="", description="Initialized time_step to try converging the soil water potential profile", 
-                                        value_comment="", references="", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    min_water_dt: float = declare(default=10, unit="s", unit_comment="", description="min value for adaptative time-step in the convergence cycle for water potential profile", 
-                                        value_comment="", references="", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    max_water_dt: float = declare(default=3600, unit="s", unit_comment="", description="max value for adaptative time-step in the convergence cycle for water potential profile", 
-                                        value_comment="", references="", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    water_potential_tolerance: float = declare(default=1, unit="Pa", unit_comment="", description="tolerance for soil water potential gradient profile convergence", 
-                                        value_comment="estimated from general usual for pressure head expression (1e-4 m) * rho * g_acceleration = 0.91 Pa", references="", DOI="",
-                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    max_iterations: int = declare(default=20, unit="adim", unit_comment="", description="Maximal convergence cycle for water potential profile", 
-                                        value_comment="", references="", DOI="",
+    water_n: float = declare(default=1.6914, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
     C_solutes_background: float = declare(default=0, unit="mol.m-3", unit_comment="", description="Background non C and non N solutes concentration in soil", 
                                         value_comment="Raw estimation to align with inorganic N range for now", references="TODO", DOI="",
@@ -418,7 +397,7 @@ class SoilModel(Model):
                                         theta_r=self.theta_R,
                                         phi=self.theta_S, # theta_s
                                         alpha=self.water_alpha, 
-                                        n=self.water_n) # Example for loam
+                                        n=self.water_n) # Example for silt-loam
 
         # 2. Build a cubic voxel grid
         self.cmf_id_grid = np.arange(nx * ny).reshape((nx, ny))
