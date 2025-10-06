@@ -426,8 +426,8 @@ class MIMICS_CN:
             scalar_shape = (1,1,1)
             prop = 0.5
             params = get_parameters_rhizodeposits_grid(
-                annual_NPP_C = np.full(scalar_shape, (1-prop)*100.),
-                annual_RD_C  = np.full(scalar_shape, prop*100),
+                annual_NPP_C = np.full(scalar_shape, 0.6), # Bolinder 2007
+                annual_RD_C  = np.full(scalar_shape, 0.1), # Pausch et Kuzyakov
                 clay_pct     = np.full(scalar_shape, c),
                 Tsoil        = np.full(scalar_shape, 10),
                 input_RD_CN  = np.full(scalar_shape, 15),

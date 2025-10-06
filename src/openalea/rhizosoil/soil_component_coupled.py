@@ -789,6 +789,21 @@ class SoilModel(Model):
 
     @potential
     @rate
+    def _soil_moisture(self, voxel_volume, soil_moisture, water_uptake):
+        """moisture computed by CMF but adjusted by water uptake beforehand
+
+        Args:
+            voxel_volume (_type_): _description_
+            soil_moisture (_type_): _description_
+            water_uptake (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        return ((voxel_volume * soil_moisture) - water_uptake * self.time_step) / voxel_volume    
+
+    @actual
+    @rate
     def cmf_transport(self):
         """
         Water and solute transport based on the CMF model
@@ -797,7 +812,6 @@ class SoilModel(Model):
         mineral_N_fertilization_amount = self.voxels["mineral_N_fertilization_rate"][0, 0, 0] * self.time_step # gN
         fertilization_volume = self.scene_xrange * self.scene_yrange * rain_intensity / 24 / 1e3 # m3 for current hour, # NOTE should be included in rain input time series
         fertigation_no3 = mineral_N_fertilization_amount / fertilization_volume if fertilization_volume > 0. else 0.
-        print(rain_intensity, fertigation_no3)
 
         # First retreive volumic concentrations of solutes from CN-biochem model
         volumic_concentrations = {}
@@ -814,6 +828,8 @@ class SoilModel(Model):
                 cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
 
                 for iz, l in enumerate(cell.layers):
+                    l.theta = self.voxels["soil_moisture"][iy, iz, ix] # is modified by water_uptake prior cmf running
+                    l.potential = self.r_curve.MatricPotential(l.theta)
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
                         l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
 
@@ -839,7 +855,7 @@ class SoilModel(Model):
         dry_soil_mass = self.voxels["dry_soil_mass"]
         DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
         DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
-        dissolved_mineral_N = self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+        dissolved_mineral_N = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
 
         net_N_uptake = 1e3 * 3600 * (
             self.voxels["mineralN_uptake"] 
@@ -855,7 +871,8 @@ class SoilModel(Model):
                              ) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
 
         C_cells = (self.voxels["cells_release"] / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
-        averaged_litter_input = 10 # mg.cm-3.y-1
+        baseline_litter_input = 0.6 # mg.cm-3.y-1
+        baseline_labile_input = 0.05 # mg.cm-3.y-1
 
 
         N_rhizodeposition = (((self.voxels["amino_acids_diffusion_from_roots"] 
@@ -864,15 +881,19 @@ class SoilModel(Model):
         
         CN_rhizodeposition = np.where(N_rhizodeposition > 0., C_rhizodeposition / np.where(N_rhizodeposition == 0., 1., N_rhizodeposition), 1e3) # TODO: Check for a realistic max
 
+        # WARNING, in practice this might break C_balance!
+        total_litter_input = np.where(baseline_litter_input + C_cells > 0., baseline_litter_input + C_cells, baseline_litter_input)
+        total_labile_input = np.where(baseline_labile_input + C_rhizodeposition > 0., baseline_labile_input + C_rhizodeposition, baseline_labile_input)
+
         # TODO: CAREFULL, reverse fluxes deactivated for now!!
         self.mimics(soil_temperature=soil_temperature,
                     labile_OC=DOC, # Expects mgC/cm3
                     labile_ON=DON, 
                     labile_IN=dissolved_mineral_N, 
                     net_N_uptake=np.maximum(net_N_uptake, 0.), 
-                    litter_inputs=np.where(C_cells <= 0., averaged_litter_input, C_cells), 
-                    litter_CN=np.full_like(C_cells, self.CN_ratio_amino_acids), # TODO: would also need to estimate CN root cells
-                    rhizodeposits_inputs=np.where(C_rhizodeposition <=0., averaged_litter_input, C_rhizodeposition),
+                    litter_inputs=total_litter_input, 
+                    litter_CN=np.full_like(C_cells, 15), # TODO: would also need to estimate CN root cells
+                    rhizodeposits_inputs=total_labile_input,
                     rhizodeposits_CN=CN_rhizodeposition)
 
         concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
@@ -893,7 +914,7 @@ class SoilModel(Model):
     def _voxel_mineral_N_fertilization(self, mineral_N_fertilization_rate, dry_soil_mass):
         return dry_soil_mass * mineral_N_fertilization_rate.mean() / dry_soil_mass.sum()
 
-
+    @potential
     @rate
     def _mineral_N_net_mineralization(self, soil_temperature, voxel_volume):
         """CN-Wheat mineralization function"""
@@ -937,15 +958,15 @@ class SoilModel(Model):
     def _C_mineralN_soil(self, dissolved_mineral_N, dry_soil_mass, soil_moisture, voxel_volume):
         return dissolved_mineral_N * (dry_soil_mass / (soil_moisture * voxel_volume)) / 14
 
-    #TP@segmentation
-    #TP@state
-    def _C_amino_acids_soil(self, DOC, dry_soil_mass, soil_moisture, voxel_volume):
-        return DOC * (dry_soil_mass * (soil_moisture / voxel_volume)) / 12 / self.ratio_C_per_amino_acid
+    @segmentation
+    @state
+    def _C_amino_acids_soil(self, DON, dry_soil_mass, soil_moisture, voxel_volume):
+        return DON * (dry_soil_mass / (soil_moisture * voxel_volume)) / 14 / 1.4
     
     @segmentation
     @state
     def _C_hexose_soil(self, DOC, dry_soil_mass, soil_moisture, voxel_volume):
-        return DOC * (dry_soil_mass * (soil_moisture * voxel_volume)) / 12 / 6
+        return DOC * (dry_soil_mass / (soil_moisture * voxel_volume)) / 12 / 6
     
     #TP@state
     def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):
