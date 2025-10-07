@@ -187,7 +187,7 @@ class SoilModel(Model):
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
     bulk_density: float = declare(default=1.42, unit="g.mL", unit_comment="", description="Volumic density of the dry soil", 
                                         value_comment="", references="", DOI="",
-                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     dry_soil_mass: float = declare(default=1.42, unit="g", unit_comment="", description="dry weight of the considered voxel element", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
@@ -765,27 +765,9 @@ class SoilModel(Model):
         # outputs = self.get_from_voxel(outputs, soil_outputs=soil_outputs)
 
     
-    # MODEL EQUATIONS
-    def soil_moisture_capacity(self, psi):
-        """
-        Specific moisture capacity function, C(psi)
-        Derivarion of the soil_moisture function
-        """
-        m = 1 - 1/self.water_n
-        return (self.theta_S - self.theta_R) * self.water_alpha * self.water_n * m * (((self.water_alpha * np.abs(psi))**(self.water_n - 1)) /
-                                                                                     ((1 + (self.water_alpha * np.abs(psi))**self.water_n)**(m + 1)))
-
-    def soil_water_conductivity(self, theta):
-        """
-        Compute water conductivity at each point as function of soil moisture according to the van Genuchten-Mualem Model
-        """
-        m = 1-1/self.water_n
-        Se = (theta - self.theta_R) / (self.theta_S - self.theta_R)
-        return self.saturated_hydraulic_conductivity * Se**0.5 * (1 - (1 - Se**(1/m))**m)**2
-    
-    def _soil_moisture(self, water_potential_soil):
-        m = 1 - (1/self.water_n)
-        return self.theta_R + (self.theta_S - self.theta_R) / (1 + np.abs(self.water_alpha * water_potential_soil)**self.water_n) ** m
+    # def _soil_moisture(self, water_potential_soil):
+    #     m = 1 - (1/self.water_n)
+    #     return self.theta_R + (self.theta_S - self.theta_R) / (1 + np.abs(self.water_alpha * water_potential_soil)**self.water_n) ** m
 
     @potential
     @rate
@@ -846,7 +828,25 @@ class SoilModel(Model):
                     self.voxels["water_potential_soil"][iy, iz, ix] = (l.potential - l.position[2]) * 1000 * 9.81 # Convert to Pa
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
                         self.voxels[solute_name][iy, iz, ix] = l.conc(solute) * (self.voxels["soil_moisture"][iy, iz, ix] * self.voxels["voxel_volume"][iy, iz, ix]) / self.voxels["dry_soil_mass"][iy, iz, ix]
-                    
+
+    
+    @actual
+    @rate
+    def _DOC(self, DOC, dry_soil_mass, hexose_exudation, phloem_hexose_exudation, mucilage_secretion, cells_release, hexose_uptake_from_soil, phloem_hexose_uptake_from_soil, amino_acids_diffusion_from_roots, amino_acids_diffusion_from_xylem, amino_acids_uptake):
+        C_rhizodeposition = (hexose_exudation + phloem_hexose_exudation + mucilage_secretion + cells_release - hexose_uptake_from_soil - phloem_hexose_uptake_from_soil 
+                      + amino_acids_diffusion_from_roots + amino_acids_diffusion_from_xylem - amino_acids_uptake)
+        # print(hexose_exudation.max(), phloem_hexose_exudation.max(), mucilage_secretion.max(), cells_release.max(), hexose_uptake_from_soil.max(), phloem_hexose_uptake_from_soil.max(), 
+        #               amino_acids_diffusion_from_roots.max(), amino_acids_diffusion_from_xylem.min(), amino_acids_uptake.max())
+        # print("RD", C_rhizodeposition.min(), C_rhizodeposition.mean(), C_rhizodeposition.max())
+        return np.maximum(DOC + C_rhizodeposition * (self.time_step / dry_soil_mass), 0.)
+        
+    @actual
+    @rate
+    def _DON(self, DON, dry_soil_mass, amino_acids_diffusion_from_roots, amino_acids_diffusion_from_xylem, amino_acids_uptake):
+        N_rhizodeposition = (amino_acids_diffusion_from_roots + amino_acids_diffusion_from_xylem - amino_acids_uptake) / self.CN_ratio_amino_acids
+        return np.maximum(DON + N_rhizodeposition * (self.time_step / dry_soil_mass), 0.)
+    
+
     @actual
     @state
     def mimics_cn_states(self):
@@ -862,28 +862,41 @@ class SoilModel(Model):
             - self.voxels["mineralN_diffusion_from_roots"] 
             - self.voxels["mineralN_diffusion_from_xylem"]) / voxel_volume / 1e6 # gN.s-1 to mgN/cm3/h
         
-        C_rhizodeposition = ((self.voxels["hexose_exudation"] 
-                             + self.voxels["phloem_hexose_exudation"] 
-                             + self.voxels["mucilage_secretion"]
-                             + self.voxels["amino_acids_diffusion_from_roots"] 
-                             + self.voxels["amino_acids_diffusion_from_xylem"] 
-                             - self.voxels["amino_acids_uptake"]
-                             ) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
+        # C_rhizodeposition = ((self.voxels["hexose_exudation"] 
+        #                      + self.voxels["phloem_hexose_exudation"] 
+        #                      + self.voxels["mucilage_secretion"]
+        #                      + self.voxels["amino_acids_diffusion_from_roots"] 
+        #                      + self.voxels["amino_acids_diffusion_from_xylem"] 
+        #                      - self.voxels["amino_acids_uptake"]
+        #                      ) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
 
-        C_cells = (self.voxels["cells_release"] / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
-        baseline_litter_input = 0.6 # mg.cm-3.y-1
-        baseline_labile_input = 0.05 # mg.cm-3.y-1
+        # C_cells = (self.voxels["cells_release"] / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
 
 
-        N_rhizodeposition = (((self.voxels["amino_acids_diffusion_from_roots"] 
-                             + self.voxels["amino_acids_diffusion_from_xylem"] 
-                             - self.voxels["amino_acids_uptake"]) / self.CN_ratio_amino_acids) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gN.s-1 to mgN.cm-3.y-1
+        # N_rhizodeposition = (((self.voxels["amino_acids_diffusion_from_roots"] 
+        #                      + self.voxels["amino_acids_diffusion_from_xylem"] 
+        #                      - self.voxels["amino_acids_uptake"]) / self.CN_ratio_amino_acids) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gN.s-1 to mgN.cm-3.y-1
         
-        CN_rhizodeposition = np.where(N_rhizodeposition > 0., C_rhizodeposition / np.where(N_rhizodeposition == 0., 1., N_rhizodeposition), 1e3) # TODO: Check for a realistic max
+        # CN_rhizodeposition = np.where(N_rhizodeposition > 0., C_rhizodeposition / np.where(N_rhizodeposition == 0., 1., N_rhizodeposition), 1e3) # TODO: Check for a realistic max
 
-        # WARNING, in practice this might break C_balance!
-        total_litter_input = np.where(baseline_litter_input + C_cells > 0., baseline_litter_input + C_cells, baseline_litter_input)
-        total_labile_input = np.where(baseline_labile_input + C_rhizodeposition > 0., baseline_labile_input + C_rhizodeposition, baseline_labile_input)
+        baseline_litter_input = 1. # mg.cm-3.y-1 about 300 g/m2/y
+        litter_total_CN = 80.
+        lignin_in_mass = 0.2
+        C_in_mass = 0.45
+        N_in_mass = C_in_mass / litter_total_CN
+        mimics_lignin_N_ratio = lignin_in_mass / N_in_mass
+        fmet = 0.85 - 0.013 * mimics_lignin_N_ratio
+        litter_metabolic_CN = 15.
+        litter_struct_CN = (litter_total_CN - litter_metabolic_CN * fmet) / (1 - fmet)
+
+        # baseline_ratio = baseline_labile_input / (baseline_litter_input + baseline_labile_input)
+        # C_RD_pos = np.maximum(C_rhizodeposition, 0.)
+        # C_RD_neg = np.minimum(C_rhizodeposition, 0.)
+        # baseline_litter_input = baseline_litter_input + C_RD_neg * (1-baseline_ratio)
+        # baseline_labile_input = baseline_labile_input + C_RD_neg * baseline_ratio
+        # # WARNING, in practice this might break C_balance!
+        # total_litter_input = np.where(baseline_litter_input + C_cells > 0., baseline_litter_input + C_cells, 0.06)
+        # total_labile_input = np.where(baseline_labile_input + C_RD_pos > 0., baseline_labile_input + C_RD_pos, 0.001)
 
         # TODO: CAREFULL, reverse fluxes deactivated for now!!
         self.mimics(soil_temperature=soil_temperature,
@@ -891,16 +904,18 @@ class SoilModel(Model):
                     labile_ON=DON, 
                     labile_IN=dissolved_mineral_N, 
                     net_N_uptake=np.maximum(net_N_uptake, 0.), 
-                    litter_inputs=total_litter_input, 
-                    litter_CN=np.full_like(C_cells, 15), # TODO: would also need to estimate CN root cells
-                    rhizodeposits_inputs=total_labile_input,
-                    rhizodeposits_CN=CN_rhizodeposition)
+                    litter_inputs=np.full_like(DOC, baseline_litter_input * (1 - fmet)), 
+                    litter_CN=np.full_like(DOC, litter_struct_CN),
+                    rhizodeposits_inputs=np.full_like(DOC, baseline_litter_input * fmet),
+                    rhizodeposits_CN=np.full_like(DOC, litter_metabolic_CN))
 
         concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
         self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
-        self.voxels["DOC"] = self.mimics.Litter_DOC * concentrations_conversion
-        self.voxels["DON"] = self.mimics.Litter_DON * concentrations_conversion
-        # TODO: log available
+        # self.voxels["DOC"] = self.mimics.Litter_DOC * concentrations_conversion
+        # self.voxels["DON"] = self.mimics.Litter_DON * concentrations_conversion
+        self.voxels["DOC"] = self.mimics.SOC_available * concentrations_conversion
+        self.voxels["DON"] = self.mimics.SON_available * concentrations_conversion
+        # TODO: log litter inputs
         self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
         self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
         self.voxels["POC"] = self.mimics.SOC_chemical * concentrations_conversion
@@ -961,12 +976,18 @@ class SoilModel(Model):
     @segmentation
     @state
     def _C_amino_acids_soil(self, DON, dry_soil_mass, soil_moisture, voxel_volume):
-        return DON * (dry_soil_mass / (soil_moisture * voxel_volume)) / 14 / 1.4
+        f_DON_in_available = 0.1
+        f_AA_in_DON = 0.2
+        return f_DON_in_available * f_AA_in_DON * DON * (dry_soil_mass / (soil_moisture * voxel_volume)) / 14 / 1.4
     
     @segmentation
     @state
     def _C_hexose_soil(self, DOC, dry_soil_mass, soil_moisture, voxel_volume):
-        return DOC * (dry_soil_mass / (soil_moisture * voxel_volume)) / 12 / 6
+        f_DOC_in_available = 0.1
+        f_hex_in_available = 0.5
+        Conc = f_DOC_in_available * f_hex_in_available * DOC * (dry_soil_mass / (soil_moisture * voxel_volume)) / 12 / 6
+        # print(Conc.min(), Conc.mean(), Conc.max())
+        return f_DOC_in_available * f_hex_in_available * DOC * (dry_soil_mass / (soil_moisture * voxel_volume)) / 12 / 6
     
     #TP@state
     def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):

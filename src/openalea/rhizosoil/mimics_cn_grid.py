@@ -482,8 +482,8 @@ class MIMICS_CN:
         
         state = self.state
         # Apply the input concentrations for labile pools, result of the transport processes
-        state[0] = labile_OC
-        state[7] = labile_ON
+        state[6] = labile_OC
+        state[13] = labile_ON
         state[14] = labile_IN
         
         # TODO cache parameters that do no vary with these inputs
