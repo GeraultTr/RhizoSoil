@@ -131,10 +131,10 @@ class SoilModel(Model):
     content_hexose_soil: float = declare(default=2.4e-3, unit="mol.g-1", unit_comment="of hexose", description="Hexose concentration in soil", 
                                         value_comment="", references="Fischer et al 2007, water leaching estimation", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
-    Cs_mucilage_soil: float = declare(default=15, unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
+    Cs_mucilage_soil: float = declare(default=0., unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
-    Cs_cells_soil: float = declare(default=15, unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
+    Cs_cells_soil: float = declare(default=0., unit="mol.m-3", unit_comment="of equivalent hexose", description="Mucilage concentration in soil", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     # N related
@@ -200,7 +200,14 @@ class SoilModel(Model):
     mineral_N_net_mineralization: float = declare(default=0., unit=".s-1", unit_comment="gN per g of soil per second", description="mineral N uptake by micro organisms", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
-    
+    mucilage_degradation: float = declare(default=0., unit="mol.s-1", unit_comment="", description="Rate of mucilage degradation outside the root", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    cells_degradation: float = declare(default=0., unit="mol.s-1", unit_comment="", description="Rate of root cells degradation outside the root", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+
+
     # --- @note PARAMETERS ---
 
     # C related
@@ -269,12 +276,48 @@ class SoilModel(Model):
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
 
     # Temperature
-    process_at_T_ref: float = declare(default=1., unit="adim", unit_comment="", description="Proportion of maximal process intensity occuring at T_ref", 
-                                        value_comment="", references="", DOI="",
+
+    mucilage_degradation_rate_max_T_ref: float = declare(default=20, unit="°C", unit_comment="", description="the reference temperature", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    mucilage_degradation_rate_max_A: float = declare(default=0., unit="adim", unit_comment="", description="parameter A (may be equivalent to the coefficient of linear increase)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    mucilage_degradation_rate_max_B: float = declare(default=3.98, unit="adim", unit_comment="", description="parameter B (may be equivalent to the Q10 value)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parametyer", by="model_soil", state_variable_type="", edit_by="user")
+    mucilage_degradation_rate_max_C: float = declare(default=1, unit="adim", unit_comment="", description="parameter C (either 0 or 1)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    cells_degradation_rate_max_T_ref: float = declare(default=20, unit="°C", unit_comment="", description="the reference temperature", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    cells_degradation_rate_max_A: float = declare(default=0., unit="adim", unit_comment="", description="parameter A (may be equivalent to the coefficient of linear increase)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    cells_degradation_rate_max_B: float = declare(default=3.98, unit="adim", unit_comment="", description="parameter B (may be equivalent to the Q10 value)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parametyer", by="model_soil", state_variable_type="", edit_by="user")
+    cells_degradation_rate_max_C: float = declare(default=1, unit="adim", unit_comment="", description="parameter C (either 0 or 1)", 
+                                        value_comment="", references="We assume that all other parameters for mucilage degradation are identical to the ones for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+
+    mucilage_degradation_rate_max: float = declare(default=277 * 0.000000001 / (60 * 60 * 24) * 1000 * 1 / (0.5 * 1) * 10, unit="mol.m-2.s-1", unit_comment="of equivalent hexose", description="Maximum degradation rate of mucilage in soil", 
+                                        value_comment="", references="We assume that the maximum degradation rate for mucilage is equivalent to the one defined for hexose.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    Km_mucilage_degradation: float = declare(default=1000 * 1e-6 / 12., unit="mol.g-1", unit_comment="of equivalent hexose", description="Affinity constant for soil mucilage degradation ", 
+                                        value_comment="", references="We assume that Km for mucilage degradation is identical to the one for hexose degradation.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    cells_degradation_rate_max: float = declare(default=277 * 0.000000001 / (60 * 60 * 24) * 1000 * 1 / (0.5 * 1) * 10 / 2, unit="mol.m-2.s-1", unit_comment="of equivalent hexose", description="Maximum degradation rate of root cells at the soil/root interface", 
+                                        value_comment="", references="We assume that the maximum degradation rate for cells is equivalent to the half of the one defined for hexose.", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    Km_cells_degradation: float = declare(default=1000 * 1e-6 / 12., unit="mol.g-1", unit_comment="of equivalent hexose", description="Affinity constant for soil cells degradation", 
+                                        value_comment="", references="We assume that Km for cells degradation is identical to the one for hexose degradation.", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
 
     
-    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., **scenario):
+    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., voxel_side_length=0.01, **scenario):
         """
         DESCRIPTION
         -----------
@@ -288,8 +331,8 @@ class SoilModel(Model):
         # Before any other operation, we apply the provided scenario by changing default parameters and initialization
         self.apply_scenario(**scenario)
         self.time_step = time_step
-        self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth)
-        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil") 
+        self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth, voxel_length=voxel_side_length, voxel_height=voxel_side_length)
+        self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")
         self.voxel_neighbor = {}
 
 
@@ -952,6 +995,60 @@ class SoilModel(Model):
         return 44.44 * mineralization_rate * voxel_volume * T_effect_Vmax * 14 # expecting gN g-1 of soil # NOTE : 44 factor specific to small soil volume to match rates of CN-Wheat!
     
     
+    # RhizoDep legacy functions as we don't know how to define a realistic external availability otherwise, no constant proportion of DOC
+    @rate
+    def _mucilage_degradation(self, Cs_mucilage_soil, root_exchange_surface, soil_temperature):
+        """
+        This function computes the rate of mucilage degradation outside the root (in mol of equivalent-hexose per second)
+        for a given root element. Only the external surface of the root element is taken into account here, similarly to
+        what is done for mucilage secretion.
+        :param Cs_mucilage_soil: mucilage concentration in soil solution (equivalent hexose, mol.m-3)
+        :param root_exchange_surface: external root exchange surface in contact with soil solution (m2)
+        :return: the updated root element n
+        """
+
+        # We correct the maximal degradation rate according to soil temperature:
+        corrected_mucilage_degradation_rate_max = self.mucilage_degradation_rate_max * self.temperature_modification(
+                                                                    soil_temperature=soil_temperature,
+                                                                    T_ref=self.mucilage_degradation_rate_max_T_ref,
+                                                                    A=self.mucilage_degradation_rate_max_A,
+                                                                    B=self.mucilage_degradation_rate_max_B,
+                                                                    C=self.mucilage_degradation_rate_max_C)
+
+        # The degradation rate is defined according to a Michaelis-Menten function of the concentration of mucilage
+        # in the soil:
+        result = corrected_mucilage_degradation_rate_max * root_exchange_surface * Cs_mucilage_soil / (
+                self.Km_mucilage_degradation + Cs_mucilage_soil)
+        result[result < 0.] = 0.
+
+        return result
+
+    @rate
+    def _cells_degradation(self, Cs_cells_soil, root_exchange_surface, soil_temperature):
+        """
+        This function computes the rate of root cells degradation outside the root (in mol of equivalent-hexose per second)
+        for a given root element. Only the external surface of the root element is taken into account as the exchange
+        surface, similarly to what is done for root cells release.
+        :param Cs_cells_soil: released cells concentration in soil solution (equivalent hexose, mol.m-3)
+        :param root_exchange_surface: external root exchange surface in contact with soil solution (m2)
+        :return: the updated root element n
+        """
+
+        # We correct the maximal degradation rate according to soil temperature:
+        corrected_cells_degradation_rate_max = self.cells_degradation_rate_max * self.temperature_modification(
+                                                                        soil_temperature=soil_temperature,
+                                                                        T_ref=self.cells_degradation_rate_max_T_ref,
+                                                                        A=self.cells_degradation_rate_max_A,
+                                                                        B=self.cells_degradation_rate_max_B,
+                                                                        C=self.cells_degradation_rate_max_C)
+
+        # The degradation rate is defined according to a Michaelis-Menten function of the concentration of root cells
+        # in the soil:
+        result = corrected_cells_degradation_rate_max * root_exchange_surface * Cs_cells_soil / (
+                self.Km_cells_degradation + Cs_cells_soil)
+        result[result < 0] = 0.
+        return result
+
     # @state
     def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, voxel_mineral_N_fertilization):
         balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
@@ -965,6 +1062,7 @@ class SoilModel(Model):
         balance[balance < 0] = 0
 
         return balance
+    
 
     # @note Post state coupling variables
 
@@ -989,7 +1087,8 @@ class SoilModel(Model):
         # print(Conc.min(), Conc.mean(), Conc.max())
         return f_DOC_in_available * f_hex_in_available * DOC * (dry_soil_mass / (soil_moisture * voxel_volume)) / 12 / 6
     
-    #TP@state
+    @segmentation
+    @state
     def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):
         balance = Cs_mucilage_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
             mucilage_secretion
@@ -998,7 +1097,8 @@ class SoilModel(Model):
         balance[balance < 0.] = 0.
         return balance
     
-    #TP@state
+    @segmentation
+    @state
     def _Cs_cells_soil(self, Cs_cells_soil, soil_moisture, voxel_volume, cells_release, cells_degradation):
         balance = Cs_cells_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
                 cells_release
@@ -1010,8 +1110,8 @@ class SoilModel(Model):
     @postsegmentation
     @state
     def _Cv_solutes_soil(self, C_hexose_soil, Cs_mucilage_soil, Cs_cells_soil, C_mineralN_soil, C_amino_acids_soil):
-        # return C_hexose_soil + Cs_mucilage_soil + Cs_cells_soil + C_mineralN_soil + C_amino_acids_soil + self.C_solutes_background # Commented until we are sure of proper initialization and balance of these different concentrations
-        return C_mineralN_soil
+        return C_hexose_soil + Cs_mucilage_soil + Cs_cells_soil + C_mineralN_soil + C_amino_acids_soil + self.C_solutes_background # Commented until we are sure of proper initialization and balance of these different concentrations
+        # return C_mineralN_soil 
     
     @state
     def _water_volume(self, soil_moisture, voxel_volume):
