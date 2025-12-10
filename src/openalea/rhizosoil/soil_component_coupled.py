@@ -760,6 +760,7 @@ class SoilModel(Model):
         t4 = time.time()
         if debug: print("soil sends plants: ", t4 - t3)
 
+
     def get_from_plant(self, plant_data):
         """
         TODO : probably transfer to composite
