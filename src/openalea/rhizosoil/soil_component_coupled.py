@@ -3,11 +3,12 @@ import numpy as np
 from dataclasses import dataclass
 import time
 from multiprocessing.shared_memory import SharedMemory
-import numpy as np
+import pandas as pd
 
 # subcomponents packages
 import cmf
 from openalea.rhizosoil.mimics_cn_grid import MIMICS_CN
+from openalea.soiltemp.model import PyCampbell
 
 
 # Utility packages
@@ -192,7 +193,13 @@ class SoilModel(Model):
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
     clay_percentage: float = declare(default=12.3, unit="%", unit_comment="", description="clay percentage of voxel", 
-                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.8, BD unknown", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    sand_percentage: float = declare(default=14.9, unit="%", unit_comment="", description="clay percentage of voxel", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.8, BD unknown", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    silt_percentage: float = declare(default=72.8, unit="%", unit_comment="", description="clay percentage of voxel", 
+                                        value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.8, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     
     # --- @note RATES INITIALIZATION ---
@@ -317,7 +324,7 @@ class SoilModel(Model):
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
 
     
-    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., voxel_side_length=0.01, **scenario):
+    def __init__(self, time_step, scene_xrange=1., scene_yrange=1., soil_depth=1., voxel_side_length=0.03, **scenario):
         """
         DESCRIPTION
         -----------
@@ -331,6 +338,7 @@ class SoilModel(Model):
         # Before any other operation, we apply the provided scenario by changing default parameters and initialization
         self.apply_scenario(**scenario)
         self.time_step = time_step
+        self.simulation_time_hours = 0
         self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth, voxel_length=voxel_side_length, voxel_height=voxel_side_length)
         self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")
         self.voxel_neighbor = {}
@@ -417,6 +425,8 @@ class SoilModel(Model):
         self.mimics = MIMICS_CN(time_step_in_hours=self.time_step / 3600,
                                 clay_percentage=self.voxels["clay_percentage"])
         self.mimics_cn_states()
+
+        self.initiate_campbell()
 
 
     def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
@@ -513,7 +523,7 @@ class SoilModel(Model):
                         l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
             
             # Groundwater table boundary condition 
-            self.ground_water_theta = 0.1 # TODO : add as a varying input
+            self.ground_water_theta = 0.25 # TODO : add as a varying input
             cell.layers[-1].theta = self.ground_water_theta
             cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
 
@@ -521,6 +531,104 @@ class SoilModel(Model):
         water_integrator = cmf.ImplicitEuler(self.cmf_project, solve_tolerance)
         solute_integrator = cmf.CVodeKrylov(self.cmf_project, solve_tolerance)
         self.cmf_solver = cmf.SoluteWaterIntegrator(self.cmf_project.solutes, solute_integrator, water_integrator, self.cmf_project)
+
+
+    def initiate_campbell(self):
+        self.campbell_input_df = pd.read_csv('inputs/daily_grignon_meteo.csv', sep=",")
+        self.campbell_input_df["DATE"] = pd.to_datetime({"year": self.campbell_input_df["AN"], "month": self.campbell_input_df["MOIS"], "day": self.campbell_input_df["JOUR"]}, errors="coerce")
+
+        nb_layers = self.voxels['z2'].shape[1]
+        soil_depth = self.voxels['z2'].max() * 100 # m to cm
+        layer_thickness = np.unique(self.voxels['z2'] - self.voxels['z1'])[0] * 100 # m to cm
+        bulk_density = self.voxels['bulk_density'][0, 0, 0] # g/cm3
+        SOC = (self.voxels["MAOC"] + self.voxels["POC"] + self.voxels["DOC"] + self.voxels["microbial_C"]).mean() * 100 # gC/100g of dry soil
+
+        # Silt Loam, Saxon et Rawls 2006 NOTE expected to be different from Hydrus Theta_S and Theta_R, not the same parameters TODO to parameters
+        permanent_wilting_point = 0.11
+        field_capacity=0.31
+        soil_water_saturated=0.48
+
+        # TODO soil texture will be passed from the model rather than hardcoded here
+
+        self.temperature_model = PyCampbell()
+
+        self.static_config_dict = self.temperature_model.static_config(nb_layers=nb_layers, 
+                                                    SOIL_ID="SILO",
+                                                    SOIL_NAME="SiltyLoam",
+                                                    layer_thickness=layer_thickness,
+                                                    bulk_density=bulk_density,
+                                                    soil_depth=soil_depth,
+                                                    soil_organic_C=SOC,
+                                                    permanent_wilting_point=permanent_wilting_point,
+                                                    soil_water_saturated=soil_water_saturated,
+                                                    field_capacity=field_capacity,
+                                                    clay_percentage=self.clay_percentage,
+                                                    sand_percentage=self.sand_percentage,
+                                                    silt_percentage=self.silt_percentage,
+                                                    XLAT=48.8442,
+                                                    TAV=11.3, # Ljutovac 2002 + CLimatik TODO to parameters
+                                                    TAMP=8.0 # based on monthly average (max-min)/2, 12.6 if min/max daily, if hourly will obviously be different TODO sort out
+                                                    )
+
+        spinup_starting_date = pd.to_datetime("1998-01-01")
+        initial_date = pd.to_datetime("1998-12-17")
+        self.previous_DOY = 347
+        current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == spinup_starting_date]
+        sunrise = current_inputs["SUNUP"].iat[0]
+        sunset = current_inputs["SUNDWN"].iat[0]
+        soil_moisture = self.voxels['soil_moisture'].mean(axis=(0, 2)) # cm3/cm3
+
+        config = self.temperature_model.daily_config(self.static_config_dict,
+                                    DATE=spinup_starting_date,
+                                    T2M=current_inputs["TM"].iat[0], # °C
+                                    TMIN=current_inputs["TN"].iat[0], # °C
+                                    TMAX=current_inputs["TX"].iat[0], # °C
+                                    RAIN=current_inputs["RR"].iat[0], # mm
+                                    SRAD=current_inputs["RG"].iat[0] / 100, # from J/cm2 to MJ/m2
+                                    DAYLD=sunset - sunrise,
+                                    SUNUP=sunrise,
+                                    SUNDN=sunset,
+                                    plant_available_water=(soil_moisture - permanent_wilting_point) / (field_capacity - permanent_wilting_point),
+                                    LAI=0., # TODO to couple with shoot
+                                    albedo=0.12,
+                                    irrig=0.,
+                                    aboveGroundDM=0.) # TODO to couple with shoot
+        
+        res, previous_outputs = self.temperature_model.run(config=config, nb_steps=1)
+        
+        spinup_days = (initial_date - spinup_starting_date).days
+        print("[INFO] starting temperature model spinup")
+        for day in range(spinup_days):
+            current_date = spinup_starting_date + pd.Timedelta(days=day+1)
+            current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == current_date]
+            sunrise = current_inputs["SUNUP"].iat[0]
+            sunset = current_inputs["SUNDWN"].iat[0]
+            soil_moisture = self.voxels['soil_moisture'].mean(axis=(0, 2)) # cm3/cm3
+
+            config = self.temperature_model.daily_config(self.static_config_dict,
+                                        DATE=current_date,
+                                        T2M=current_inputs["TM"].iat[0], # °C
+                                        TMIN=current_inputs["TN"].iat[0], # °C
+                                        TMAX=current_inputs["TX"].iat[0], # °C
+                                        RAIN=current_inputs["RR"].iat[0], # mm
+                                        SRAD=current_inputs["RG"].iat[0] / 100, # from J/cm2 to MJ/m2
+                                        DAYLD=sunset - sunrise, # h
+                                        SUNUP=sunrise, # h
+                                        SUNDN=sunset, # h
+                                        plant_available_water=(soil_moisture - permanent_wilting_point) / (field_capacity - permanent_wilting_point),
+                                        LAI=0.,
+                                        albedo=0.12,
+                                        irrig=0.,
+                                        aboveGroundDM=0.)
+
+            res, previous_outputs = self.temperature_model.run(config=config, nb_steps=1, previous_outputs=previous_outputs)
+        print("[INFO] Finished temperature model spinup")
+
+        self.previous_campbell_states = previous_outputs
+        self.current_date = initial_date
+        temperature_array = res["TSLD"].loc[res["Layer"] >= 1].to_numpy() # We ignore layer 0 that gives surface temperature
+        self.voxels['soil_temperature'][:] = temperature_array[None, :, None]
+
 
     def voxel_grid_to_self(self, name, init_value):
         self.voxels[name] = np.zeros((self.voxel_number_y, self.voxel_number_z, self.voxel_number_x))
@@ -739,6 +847,8 @@ class SoilModel(Model):
 
         # Run the soil model
         self.choregrapher(module_family=self.__class__.__name__, *args)
+
+        self.simulation_time_hours += 1
 
         homogeneize_properties = False
         if homogeneize_properties:
@@ -967,6 +1077,44 @@ class SoilModel(Model):
         self.voxels["microbial_C"] = (self.mimics.MBC_r + self.mimics.MBC_K) * concentrations_conversion
         self.voxels["microbial_N"] = (self.mimics.MBN_r + self.mimics.MBN_K) * concentrations_conversion
 
+    @actual
+    @state
+    def update_temperature(self):
+        if (self.simulation_time_hours + 12) % 24 == 0.:
+            print("[INFO] updating soil temperature")
+            permanent_wilting_point = 0.11
+            field_capacity=0.31
+
+            self.current_date += pd.Timedelta(days=1)
+            print(self.current_date)
+            current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == self.current_date]
+            sunrise = current_inputs["SUNUP"].iat[0]
+            sunset = current_inputs["SUNDWN"].iat[0]
+            soil_moisture = self.voxels['soil_moisture'].mean(axis=(0, 2)) # cm3/cm3
+
+            config = self.temperature_model.daily_config(self.static_config_dict,
+                                        DATE=self.current_date,
+                                        T2M=current_inputs["TM"].iat[0], # °C
+                                        TMIN=current_inputs["TN"].iat[0], # °C
+                                        TMAX=current_inputs["TX"].iat[0], # °C
+                                        RAIN=current_inputs["RR"].iat[0], # mm
+                                        SRAD=current_inputs["RG"].iat[0] / 100, # from J/cm2 to MJ/m2
+                                        DAYLD=sunset - sunrise, # h
+                                        SUNUP=sunrise, # h
+                                        SUNDN=sunset, # h
+                                        plant_available_water=(soil_moisture - permanent_wilting_point) / (field_capacity - permanent_wilting_point),
+                                        LAI=0.,
+                                        albedo=0.12,
+                                        irrig=0.,
+                                        aboveGroundDM=0.)
+
+            res, previous_outputs = self.temperature_model.run(config=config, nb_steps=1, previous_outputs=self.previous_campbell_states)
+
+            self.previous_campbell_states = previous_outputs
+            temperature_array = res["TSLD"].loc[res["Layer"] >= 1].to_numpy() # We ignore layer 0 that gives surface temperature
+            self.voxels['soil_temperature'][:] = temperature_array[None, :, None]
+            print(self.voxels["soil_temperature"].mean(axis=(0, 2)))
+            print(temperature_array)
     
     @actual
     @rate
