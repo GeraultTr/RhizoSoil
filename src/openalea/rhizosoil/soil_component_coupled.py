@@ -207,6 +207,15 @@ class SoilModel(Model):
     mineral_N_net_mineralization: float = declare(default=0., unit=".s-1", unit_comment="gN per g of soil per second", description="mineral N uptake by micro organisms", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    microbial_respiration: float = declare(default=0., unit="gC.g-1.s-1", unit_comment="gC per g of soil per second", description="CO2 respiration by micro organisms", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    N_mineralization: float = declare(default=0., unit="gN.g-1.s-1", unit_comment="gN per g of soil per second", description="SOM net N mineralization by micro organisms", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    microbial_N_uptake: float = declare(default=0., unit="gN.g-1.s-1", unit_comment="gN per g of soil per second", description="N acquisisition by micro organisms competing with root N uptake", 
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
     mucilage_degradation: float = declare(default=0., unit="mol.s-1", unit_comment="", description="Rate of mucilage degradation outside the root", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
@@ -1009,31 +1018,18 @@ class SoilModel(Model):
         dry_soil_mass = self.voxels["dry_soil_mass"]
         DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
         DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
-        dissolved_mineral_N = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+        dissolved_mineral_N_previous = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
 
         net_N_uptake = 1e3 * 3600 * (
             self.voxels["mineralN_uptake"] 
             - self.voxels["mineralN_diffusion_from_roots"] 
             - self.voxels["mineralN_diffusion_from_xylem"]) / voxel_volume / 1e6 # gN.s-1 to mgN/cm3/h
         
-        # C_rhizodeposition = ((self.voxels["hexose_exudation"] 
-        #                      + self.voxels["phloem_hexose_exudation"] 
-        #                      + self.voxels["mucilage_secretion"]
-        #                      + self.voxels["amino_acids_diffusion_from_roots"] 
-        #                      + self.voxels["amino_acids_diffusion_from_xylem"] 
-        #                      - self.voxels["amino_acids_uptake"]
-        #                      ) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
-
-        # C_cells = (self.voxels["cells_release"] / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gC.s-1 to mgC.cm-3.y-1
-
-
-        # N_rhizodeposition = (((self.voxels["amino_acids_diffusion_from_roots"] 
-        #                      + self.voxels["amino_acids_diffusion_from_xylem"] 
-        #                      - self.voxels["amino_acids_uptake"]) / self.CN_ratio_amino_acids) / self.voxels["voxel_volume"]) * 3600 * 24 * 365 * 1e3 / 1e6 # All in gN.s-1 to mgN.cm-3.y-1
+        net_N_uptake_pos = np.maximum(net_N_uptake, 0.)
+        dissolved_mineral_N = dissolved_mineral_N_previous - np.minimum(net_N_uptake, 0.) # TODO, check if a negative uptake would be valid to the model input
         
-        # CN_rhizodeposition = np.where(N_rhizodeposition > 0., C_rhizodeposition / np.where(N_rhizodeposition == 0., 1., N_rhizodeposition), 1e3) # TODO: Check for a realistic max
-
-        baseline_litter_input = 1. # mg.cm-3.y-1 about 300 g/m2/y
+        # TODO Constant estimation here
+        baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y
         litter_total_CN = 80.
         lignin_in_mass = 0.2
         C_in_mass = 0.45
@@ -1043,33 +1039,24 @@ class SoilModel(Model):
         litter_metabolic_CN = 15.
         litter_struct_CN = (litter_total_CN - litter_metabolic_CN * fmet) / (1 - fmet)
 
-        # baseline_ratio = baseline_labile_input / (baseline_litter_input + baseline_labile_input)
-        # C_RD_pos = np.maximum(C_rhizodeposition, 0.)
-        # C_RD_neg = np.minimum(C_rhizodeposition, 0.)
-        # baseline_litter_input = baseline_litter_input + C_RD_neg * (1-baseline_ratio)
-        # baseline_labile_input = baseline_labile_input + C_RD_neg * baseline_ratio
-        # # WARNING, in practice this might break C_balance!
-        # total_litter_input = np.where(baseline_litter_input + C_cells > 0., baseline_litter_input + C_cells, 0.06)
-        # total_labile_input = np.where(baseline_labile_input + C_RD_pos > 0., baseline_labile_input + C_RD_pos, 0.001)
+        initial_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + DOC + (baseline_litter_input / (365 * 24)) ) * (1e6 * voxel_volume)
+        initial_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + DON + (baseline_litter_input / (litter_total_CN * 365 * 24)) ) * (1e6 * voxel_volume)
 
-        # TODO: CAREFULL, reverse fluxes deactivated for now!!
         self.mimics(soil_temperature=soil_temperature,
                     labile_OC=DOC, # Expects mgC/cm3
                     labile_ON=DON, 
                     labile_IN=dissolved_mineral_N, 
-                    net_N_uptake=np.maximum(net_N_uptake, 0.), 
+                    net_N_uptake=net_N_uptake_pos, 
                     litter_inputs=np.full_like(DOC, baseline_litter_input * (1 - fmet)), 
                     litter_CN=np.full_like(DOC, litter_struct_CN),
                     rhizodeposits_inputs=np.full_like(DOC, baseline_litter_input * fmet),
                     rhizodeposits_CN=np.full_like(DOC, litter_metabolic_CN))
-
+        
         concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
         self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
-        # self.voxels["DOC"] = self.mimics.Litter_DOC * concentrations_conversion
-        # self.voxels["DON"] = self.mimics.Litter_DON * concentrations_conversion
         self.voxels["DOC"] = self.mimics.SOC_available * concentrations_conversion
         self.voxels["DON"] = self.mimics.SON_available * concentrations_conversion
-        # TODO: log litter inputs
+        # TODO: log litter inputs if varying
         self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
         self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
         self.voxels["POC"] = self.mimics.SOC_chemical * concentrations_conversion
@@ -1077,16 +1064,23 @@ class SoilModel(Model):
         self.voxels["microbial_C"] = (self.mimics.MBC_r + self.mimics.MBC_K) * concentrations_conversion
         self.voxels["microbial_N"] = (self.mimics.MBN_r + self.mimics.MBN_K) * concentrations_conversion
 
+        final_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + self.mimics.SOC_available) * (1e6 * voxel_volume)
+        final_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + self.mimics.SON_available) * (1e6 * voxel_volume)
+
+        self.voxels["microbial_respiration"] = (initial_C - final_C) / dry_soil_mass / 1e3 / 3600
+        self.voxels["N_mineralization"] = (initial_SOM_N - final_SOM_N) / dry_soil_mass / 1e3 / 3600
+        self.voxels["microbial_N_uptake"] = (((dissolved_mineral_N - self.mimics.DIN - net_N_uptake_pos)  * (1e6 * voxel_volume)) + (initial_SOM_N - final_SOM_N)) / dry_soil_mass / 1e3 / 3600
+
+        
+
     @actual
     @state
     def update_temperature(self):
         if (self.simulation_time_hours + 12) % 24 == 0.:
-            print("[INFO] updating soil temperature")
             permanent_wilting_point = 0.11
             field_capacity=0.31
 
             self.current_date += pd.Timedelta(days=1)
-            print(self.current_date)
             current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == self.current_date]
             sunrise = current_inputs["SUNUP"].iat[0]
             sunset = current_inputs["SUNDWN"].iat[0]
@@ -1113,8 +1107,6 @@ class SoilModel(Model):
             self.previous_campbell_states = previous_outputs
             temperature_array = res["TSLD"].loc[res["Layer"] >= 1].to_numpy() # We ignore layer 0 that gives surface temperature
             self.voxels['soil_temperature'][:] = temperature_array[None, :, None]
-            print(self.voxels["soil_temperature"].mean(axis=(0, 2)))
-            print(temperature_array)
     
     @actual
     @rate
