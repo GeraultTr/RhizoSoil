@@ -797,8 +797,6 @@ class SoilModel(Model):
 
     def apply_to_voxel_fast(self, iy, iz, ix, data, hs, model_name, mask):
         for name in self.inputs:
-            self.voxels[name].fill(0.)
-            
             if name in self.pullable_inputs[model_name]:
                 source_variables = self.pullable_inputs[model_name][name]
                 to_apply = np.zeros(mask.sum(), dtype=np.float64)
@@ -863,6 +861,11 @@ class SoilModel(Model):
         t1 = time.time()
 
         batch = []
+
+        # A1l inputs are cumulatives of each plants and should be initialized at 0. at each step
+        for name in self.inputs:
+            self.voxels[name].fill(0.)
+            
         for _ in range(len(queues_soil_to_plants)):
             plant_data = queue_plants_to_soil.get()
             batch.append(plant_data)
