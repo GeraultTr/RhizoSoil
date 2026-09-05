@@ -348,6 +348,7 @@ class SoilModel(Model):
         self.apply_scenario(**scenario)
         self.time_step = time_step
         self.simulation_time_hours = 0
+        self.run_mimics = False  # TODO pass as a parameter, and maybe rename
         self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth, voxel_length=voxel_side_length, voxel_height=voxel_side_length)
         self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")
         self.voxel_neighbor = {}
@@ -431,9 +432,10 @@ class SoilModel(Model):
         self.initiate_cmf(nx=self.voxel_number_x, ny=self.voxel_number_y, nz=self.voxel_number_z,
                           dx=voxel_length, dy=voxel_length, dz=voxel_height)
 
-        self.mimics = MIMICS_CN(time_step_in_hours=self.time_step / 3600,
-                                clay_percentage=self.voxels["clay_percentage"])
-        self.mimics_cn_states()
+        if self.run_mimics:
+            self.mimics = MIMICS_CN(time_step_in_hours=self.time_step / 3600,
+                                    clay_percentage=self.voxels["clay_percentage"])
+            self.mimics_cn_states()
 
         self.initiate_campbell()
 
@@ -778,8 +780,6 @@ class SoilModel(Model):
 
     def apply_to_voxel_fast(self, iy, iz, ix, data, hs, model_name, mask):
         for name in self.inputs:
-            self.voxels[name].fill(0.)
-            
             if name in self.pullable_inputs[model_name]:
                 source_variables = self.pullable_inputs[model_name][name]
                 to_apply = np.zeros(mask.sum(), dtype=np.float64)
@@ -844,6 +844,11 @@ class SoilModel(Model):
         t1 = time.time()
 
         batch = []
+
+        # A1l inputs are cumulatives of each plants and should be initialized at 0. at each step
+        for name in self.inputs:
+            self.voxels[name].fill(0.)
+
         for _ in range(len(queues_soil_to_plants)):
             plant_data = queue_plants_to_soil.get()
             batch.append(plant_data)
@@ -1013,63 +1018,64 @@ class SoilModel(Model):
     @actual
     @state
     def mimics_cn_states(self):
-        soil_temperature = self.voxels["soil_temperature"]
-        voxel_volume = self.voxels["voxel_volume"]
-        dry_soil_mass = self.voxels["dry_soil_mass"]
-        DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
-        DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
-        dissolved_mineral_N_previous = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+        if self.run_mimics:
+            soil_temperature = self.voxels["soil_temperature"]
+            voxel_volume = self.voxels["voxel_volume"]
+            dry_soil_mass = self.voxels["dry_soil_mass"]
+            DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
+            DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+            dissolved_mineral_N_previous = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
 
-        net_N_uptake = 1e3 * 3600 * (
-            self.voxels["mineralN_uptake"] 
-            - self.voxels["mineralN_diffusion_from_roots"] 
-            - self.voxels["mineralN_diffusion_from_xylem"]) / voxel_volume / 1e6 # gN.s-1 to mgN/cm3/h
-        
-        net_N_uptake_pos = np.maximum(net_N_uptake, 0.)
-        dissolved_mineral_N = dissolved_mineral_N_previous - np.minimum(net_N_uptake, 0.) # TODO, check if a negative uptake would be valid to the model input
-        
-        # TODO Constant estimation here
-        baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y
-        litter_total_CN = 80.
-        lignin_in_mass = 0.2
-        C_in_mass = 0.45
-        N_in_mass = C_in_mass / litter_total_CN
-        mimics_lignin_N_ratio = lignin_in_mass / N_in_mass
-        fmet = 0.85 - 0.013 * mimics_lignin_N_ratio
-        litter_metabolic_CN = 15.
-        litter_struct_CN = (litter_total_CN - litter_metabolic_CN * fmet) / (1 - fmet)
+            net_N_uptake = 1e3 * 3600 * (
+                self.voxels["mineralN_uptake"]
+                - self.voxels["mineralN_diffusion_from_roots"]
+                - self.voxels["mineralN_diffusion_from_xylem"]) / voxel_volume / 1e6 # gN.s-1 to mgN/cm3/h
 
-        initial_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + DOC + (baseline_litter_input / (365 * 24)) ) * (1e6 * voxel_volume)
-        initial_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + DON + (baseline_litter_input / (litter_total_CN * 365 * 24)) ) * (1e6 * voxel_volume)
+            net_N_uptake_pos = np.maximum(net_N_uptake, 0.)
+            dissolved_mineral_N = dissolved_mineral_N_previous - np.minimum(net_N_uptake, 0.) # TODO, check if a negative uptake would be valid to the model input
 
-        self.mimics(soil_temperature=soil_temperature,
-                    labile_OC=DOC, # Expects mgC/cm3
-                    labile_ON=DON, 
-                    labile_IN=dissolved_mineral_N, 
-                    net_N_uptake=net_N_uptake_pos, 
-                    litter_inputs=np.full_like(DOC, baseline_litter_input * (1 - fmet)), 
-                    litter_CN=np.full_like(DOC, litter_struct_CN),
-                    rhizodeposits_inputs=np.full_like(DOC, baseline_litter_input * fmet),
-                    rhizodeposits_CN=np.full_like(DOC, litter_metabolic_CN))
-        
-        concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
-        self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
-        self.voxels["DOC"] = self.mimics.SOC_available * concentrations_conversion
-        self.voxels["DON"] = self.mimics.SON_available * concentrations_conversion
-        # TODO: log litter inputs if varying
-        self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
-        self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
-        self.voxels["POC"] = self.mimics.SOC_chemical * concentrations_conversion
-        self.voxels["PON"] = self.mimics.SON_chemical * concentrations_conversion
-        self.voxels["microbial_C"] = (self.mimics.MBC_r + self.mimics.MBC_K) * concentrations_conversion
-        self.voxels["microbial_N"] = (self.mimics.MBN_r + self.mimics.MBN_K) * concentrations_conversion
+            # TODO Constant estimation here
+            baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y
+            litter_total_CN = 80.
+            lignin_in_mass = 0.2
+            C_in_mass = 0.45
+            N_in_mass = C_in_mass / litter_total_CN
+            mimics_lignin_N_ratio = lignin_in_mass / N_in_mass
+            fmet = 0.85 - 0.013 * mimics_lignin_N_ratio
+            litter_metabolic_CN = 15.
+            litter_struct_CN = (litter_total_CN - litter_metabolic_CN * fmet) / (1 - fmet)
 
-        final_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + self.mimics.SOC_available) * (1e6 * voxel_volume)
-        final_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + self.mimics.SON_available) * (1e6 * voxel_volume)
+            initial_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + DOC + (baseline_litter_input / (365 * 24)) ) * (1e6 * voxel_volume)
+            initial_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + DON + (baseline_litter_input / (litter_total_CN * 365 * 24)) ) * (1e6 * voxel_volume)
 
-        self.voxels["microbial_respiration"] = (initial_C - final_C) / dry_soil_mass / 1e3 / 3600
-        self.voxels["N_mineralization"] = (initial_SOM_N - final_SOM_N) / dry_soil_mass / 1e3 / 3600
-        self.voxels["microbial_N_uptake"] = (((dissolved_mineral_N - self.mimics.DIN - net_N_uptake_pos)  * (1e6 * voxel_volume)) + (initial_SOM_N - final_SOM_N)) / dry_soil_mass / 1e3 / 3600
+            self.mimics(soil_temperature=soil_temperature,
+                        labile_OC=DOC, # Expects mgC/cm3
+                        labile_ON=DON,
+                        labile_IN=dissolved_mineral_N,
+                        net_N_uptake=net_N_uptake_pos,
+                        litter_inputs=np.full_like(DOC, baseline_litter_input * (1 - fmet)),
+                        litter_CN=np.full_like(DOC, litter_struct_CN),
+                        rhizodeposits_inputs=np.full_like(DOC, baseline_litter_input * fmet),
+                        rhizodeposits_CN=np.full_like(DOC, litter_metabolic_CN))
+
+            concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
+            self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
+            self.voxels["DOC"] = self.mimics.SOC_available * concentrations_conversion
+            self.voxels["DON"] = self.mimics.SON_available * concentrations_conversion
+            # TODO: log litter inputs if varying
+            self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
+            self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
+            self.voxels["POC"] = self.mimics.SOC_chemical * concentrations_conversion
+            self.voxels["PON"] = self.mimics.SON_chemical * concentrations_conversion
+            self.voxels["microbial_C"] = (self.mimics.MBC_r + self.mimics.MBC_K) * concentrations_conversion
+            self.voxels["microbial_N"] = (self.mimics.MBN_r + self.mimics.MBN_K) * concentrations_conversion
+
+            final_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + self.mimics.SOC_available) * (1e6 * voxel_volume)
+            final_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + self.mimics.SON_available) * (1e6 * voxel_volume)
+
+            self.voxels["microbial_respiration"] = (initial_C - final_C) / dry_soil_mass / 1e3 / 3600
+            self.voxels["N_mineralization"] = (initial_SOM_N - final_SOM_N) / dry_soil_mass / 1e3 / 3600
+            self.voxels["microbial_N_uptake"] = (((dissolved_mineral_N - self.mimics.DIN - net_N_uptake_pos)  * (1e6 * voxel_volume)) + (initial_SOM_N - final_SOM_N)) / dry_soil_mass / 1e3 / 3600
 
         
 
