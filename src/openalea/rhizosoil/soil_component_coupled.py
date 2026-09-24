@@ -257,8 +257,11 @@ class SoilModel(Model):
     water_n: float = declare(default=1.6914, unit="cm-3", unit_comment="", description="alpha is the inverse of the air-entry value (or bubbling pressure)", 
                                         value_comment="", references="Hydrus 1D for Clay loam soil (Ljutovac 2002) -> (Thesis Chandra 2021)  sand 14.9, clay 12.3, silt 72.9, BD unknown", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    C_solutes_background: float = declare(default=0, unit="mol.m-3", unit_comment="", description="Background non C and non N solutes concentration in soil", 
+    C_solutes_background: float = declare(default=0, unit="mol.m-3", unit_comment="", description="Background non C and non N solutes concentration in soil",
                                         value_comment="Raw estimation to align with inorganic N range for now", references="TODO", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    no_flux_bottom_boundary: bool = declare(default=False, unit="adim", unit_comment="", description="If True, the bottom of the soil profile is a no-flux (impermeable) boundary, as in a pot experiment. If False (default), the bottom layer is forced to a fixed groundwater moisture (ground_water_theta), as for a field scenario with a shallow water table.",
+                                        value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
 
     # W patch initialization parameters
@@ -440,6 +443,13 @@ class SoilModel(Model):
         self.initiate_campbell()
 
 
+    def wetness_from_theta(self, theta):
+        """
+        cmf's RetentionCurve expects normalized wetness (effective saturation Se = (theta - theta_r) / (phi - theta_r)),
+        not the absolute volumetric water content theta itself.
+        """
+        return (theta - self.theta_R) / (self.theta_S - self.theta_R)
+
     def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
         # 1. Create a project with transported solutes
         # self.cmf_accounted_solutes = ["DOC", "DON", "dissolved_mineral_N"] # Manual
@@ -517,6 +527,9 @@ class SoilModel(Model):
 
         # Dynamic storage of rainfall nodes for each cells
         self.rainfall_nodes = {}
+        # Dynamic storage of a conservative sink for each layer, used to withdraw root water uptake from cmf's
+        # own mass-balanced integration instead of overwriting theta/potential from outside every hour.
+        self.uptake_nodes = {}
         for ix in range(nx):
             for iy in range(ny):
                 cell = self.cmf_cells[self.cmf_id_grid[ix, iy]]
@@ -529,14 +542,19 @@ class SoilModel(Model):
 
                 for iz, l in enumerate(cell.layers):
                     l.theta = self.voxels["soil_moisture"][iy, iz, ix]
-                    l.potential = self.r_curve.MatricPotential(l.theta) # Must be initialized
+                    l.potential = self.r_curve.MatricPotential(self.wetness_from_theta(l.theta)) # Must be initialized
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
                         l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
-            
-            # Groundwater table boundary condition 
+
+                    uptake_node = cmf.NeumannBoundary.create(l)
+                    uptake_node.set_flux(0.)
+                    self.uptake_nodes[(iy, iz, ix)] = uptake_node
+
+            # Groundwater table boundary condition (skipped for a no-flux, pot-like bottom boundary)
             self.ground_water_theta = 0.25 # TODO : add as a varying input
-            cell.layers[-1].theta = self.ground_water_theta
-            cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
+            if not self.no_flux_bottom_boundary:
+                cell.layers[-1].theta = self.ground_water_theta
+                cell.layers[-1].potential = self.r_curve.MatricPotential(self.wetness_from_theta(self.ground_water_theta))
 
         # 5. Set up integrators (water + solute)
         water_integrator = cmf.ImplicitEuler(self.cmf_project, solve_tolerance)
@@ -933,25 +951,6 @@ class SoilModel(Model):
         # outputs = self.get_from_voxel(outputs, soil_outputs=soil_outputs)
 
     
-    # def _soil_moisture(self, water_potential_soil):
-    #     m = 1 - (1/self.water_n)
-    #     return self.theta_R + (self.theta_S - self.theta_R) / (1 + np.abs(self.water_alpha * water_potential_soil)**self.water_n) ** m
-
-    @potential
-    @rate
-    def _soil_moisture(self, voxel_volume, soil_moisture, water_uptake):
-        """moisture computed by CMF but adjusted by water uptake beforehand
-
-        Args:
-            voxel_volume (_type_): _description_
-            soil_moisture (_type_): _description_
-            water_uptake (_type_): _description_
-
-        Returns:
-            _type_: _description_
-        """
-        return ((voxel_volume * soil_moisture) - water_uptake * self.time_step) / voxel_volume    
-
     @actual
     @rate
     def cmf_transport(self):
@@ -974,12 +973,14 @@ class SoilModel(Model):
                 cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
                 self.rainfall_nodes[self.cmf_id_grid[ix][iy]].intensity = rain_intensity
                 self.rainfall_nodes[self.cmf_id_grid[ix][iy]].set_conc(self.cmf_project.solutes[self.cmf_accounted_solutes.index("dissolved_mineral_N")], fertigation_no3)
-                cell.layers[-1].theta = self.ground_water_theta 
-                cell.layers[-1].potential = self.r_curve.MatricPotential(self.ground_water_theta)
+                if not self.no_flux_bottom_boundary:
+                    cell.layers[-1].theta = self.ground_water_theta
+                    cell.layers[-1].potential = self.r_curve.MatricPotential(self.wetness_from_theta(self.ground_water_theta))
 
+                # Other layers keep evolving under cmf's own mass-conservative state between calls: we only hand it
+                # the current root water uptake as a prescribed sink flux, instead of overwriting theta/potential.
                 for iz, l in enumerate(cell.layers):
-                    l.theta = self.voxels["soil_moisture"][iy, iz, ix] # is modified by water_uptake prior cmf running
-                    l.potential = self.r_curve.MatricPotential(l.theta)
+                    self.uptake_nodes[(iy, iz, ix)].set_flux(-self.voxels["water_uptake"][iy, iz, ix] * 24 * 3600) # m3.s-1 to m3.day-1
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
                         l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
 
