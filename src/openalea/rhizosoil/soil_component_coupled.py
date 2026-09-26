@@ -177,10 +177,13 @@ class SoilModel(Model):
     soil_moisture: float = declare(default=0.3, unit="adim", unit_comment="g.g-1", description="Volumetric proportion of water per volume of soil", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
-    water_volume: float = declare(default=0.25e-6, unit="m3", unit_comment="", description="Volume of the water in the soil element in contact with a the root segment", 
+    water_volume: float = declare(default=0.25e-6, unit="m3", unit_comment="", description="Volume of the water in the soil element in contact with a the root segment",
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
-    
+    actual_water_uptake: float = declare(default=0., unit="m3.s-1", unit_comment="of water", description="Water uptake actually withdrawn from the voxel, after clamping the requested water_uptake to the water locally available in that voxel this timestep, to keep the CMF Richards solver from being asked to extract more than physically exists",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+
     
     # Structure related
     voxel_volume: float = declare(default=1e-6, unit="m3", unit_comment="", description="Volume of the soil element in contact with a the root segment",
@@ -261,6 +264,9 @@ class SoilModel(Model):
                                         value_comment="Raw estimation to align with inorganic N range for now", references="TODO", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
     no_flux_bottom_boundary: bool = declare(default=False, unit="adim", unit_comment="", description="If True, the bottom of the soil profile is a no-flux (impermeable) boundary, as in a pot experiment. If False (default), the bottom layer is forced to a fixed groundwater moisture (ground_water_theta), as for a field scenario with a shallow water table.",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    max_uptake_fraction_of_available_water: float = declare(default=0.75, unit="adim", unit_comment="", description="Upper bound on water_uptake actually handed to the CMF solver, expressed as a fraction of the water available above theta_R in the voxel this timestep. Prevents a prescribed uptake flux from driving a voxel's water storage negative and crashing the Richards solver.",
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
 
@@ -967,6 +973,14 @@ class SoilModel(Model):
         for solute_name in self.cmf_accounted_solutes:
             volumic_concentrations[solute_name] = self.voxels[solute_name] * self.voxels["dry_soil_mass"] / (self.voxels["soil_moisture"] * self.voxels["voxel_volume"])
 
+        # Clamp the requested water_uptake to what is actually available in each voxel this timestep, so that a
+        # locally over-demanding root never asks the CMF solver to extract more water than the voxel holds.
+        available_water = np.maximum(self.voxels["voxel_volume"] * (self.voxels["soil_moisture"] - self.theta_R), 0.)
+        max_uptake = self.max_uptake_fraction_of_available_water * available_water / self.time_step
+        if np.any(self.voxels["water_uptake"] > max_uptake):
+            print("WARNING, roots uptake exceeds a minimal available fraction: CLAMPED")
+        self.voxels["actual_water_uptake"] = np.minimum(self.voxels["water_uptake"], max_uptake)
+
         # Adjust inputs for this specific time step
         for ix in range(self.voxel_number_x):
             for iy in range(self.voxel_number_y):
@@ -980,7 +994,7 @@ class SoilModel(Model):
                 # Other layers keep evolving under cmf's own mass-conservative state between calls: we only hand it
                 # the current root water uptake as a prescribed sink flux, instead of overwriting theta/potential.
                 for iz, l in enumerate(cell.layers):
-                    self.uptake_nodes[(iy, iz, ix)].set_flux(-self.voxels["water_uptake"][iy, iz, ix] * 24 * 3600) # m3.s-1 to m3.day-1
+                    self.uptake_nodes[(iy, iz, ix)].set_flux(-self.voxels["actual_water_uptake"][iy, iz, ix] * 24 * 3600) # m3.s-1 to m3.day-1
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
                         l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
 
