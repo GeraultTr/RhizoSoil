@@ -27,22 +27,22 @@ class SoilModel(Model):
     # --- @note INPUTS STATE VARIABLES FROM OTHER COMPONENTS : default values are provided if not superimposed by model coupling ---
 
     # FROM CARBON MODEL
-    hexose_exudation: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+    hexose_exudation_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
-    phloem_hexose_exudation: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+    phloem_hexose_exudation_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
-    hexose_uptake_from_soil: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+    hexose_uptake_from_soil_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
-    phloem_hexose_uptake_from_soil: float = declare(default=0., unit="mol.s-1", unit_comment="of hexose", description="", 
+    phloem_hexose_uptake_from_soil_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
-    mucilage_secretion: float = declare(default=0., unit="mol.s-1", unit_comment="of equivalent hexose", description="", 
+    mucilage_secretion_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of equivalent hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
-    cells_release: float = declare(default=0., unit="mol.s-1", unit_comment="of equivalent hexose", description="", 
+    cells_release_massic: float = declare(default=0., unit="gC.s-1", unit_comment="of equivalent hexose", description="", 
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="input", by="model_carbon", state_variable_type="", edit_by="user")
     
@@ -60,22 +60,22 @@ class SoilModel(Model):
                                                     variable_type="input", by="model_growth", state_variable_type="NonInertialExtensive", edit_by="user")
 
     # FROM NITROGEN MODEL
-    mineralN_uptake: float = declare(default=0., unit="mol.s-1", unit_comment="of nitrates", description="", 
+    mineralN_uptake: float = declare(default=0., unit="gN.s-1", unit_comment="of nitrates", description="", 
                                                     min_value="", max_value="", value_comment="", references="", DOI="", 
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
-    amino_acids_uptake: float = declare(default=0., unit="mol.s-1", unit_comment="of amino acids", description="", 
+    amino_acids_uptake: float = declare(default=0., unit="gC.s-1", unit_comment="of amino acids", description="", 
                                                     min_value="", max_value="", value_comment="", references="", DOI="",
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
-    mineralN_diffusion_from_roots: float =  declare(default=0., unit="mol.s-1", unit_comment="of nitrates", description="", 
+    mineralN_diffusion_from_roots: float =  declare(default=0., unit="gN.s-1", unit_comment="of nitrates", description="", 
                                                     min_value="", max_value="", value_comment="", references="", DOI="",
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
-    amino_acids_diffusion_from_roots: float =  declare(default=0., unit="mol.s-1", unit_comment="of amino acids", 
+    amino_acids_diffusion_from_roots: float =  declare(default=0., unit="gC.s-1", unit_comment="of amino acids", 
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
-    mineralN_diffusion_from_xylem: float =  declare(default=0., unit="mol.s-1", unit_comment="of nitrates", 
+    mineralN_diffusion_from_xylem: float =  declare(default=0., unit="gN.s-1", unit_comment="of nitrates", 
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
-    amino_acids_diffusion_from_xylem: float =  declare(default=0., unit="mol.s-1", unit_comment="of amino_acids", 
+    amino_acids_diffusion_from_xylem: float =  declare(default=0., unit="gC.s-1", unit_comment="of amino_acids", 
                                                     min_value="", max_value="", description="", value_comment="", references="", DOI="",
                                                     variable_type="input", by="model_nitrogen", state_variable_type="extensive", edit_by="user")
     
@@ -357,7 +357,7 @@ class SoilModel(Model):
         self.apply_scenario(**scenario)
         self.time_step = time_step
         self.simulation_time_hours = 0
-        self.run_mimics = False  # TODO pass as a parameter, and maybe rename
+        self.run_mimics = True  # TODO pass as a parameter, and maybe rename
         self.initiate_voxel_soil(scene_xrange, scene_yrange, soil_depth, voxel_length=voxel_side_length, voxel_height=voxel_side_length)
         self.choregrapher.add_time_and_data(instance=self, sub_time_step=self.time_step, data=self.voxels, compartment="soil")
         self.voxel_neighbor = {}
@@ -458,8 +458,8 @@ class SoilModel(Model):
 
     def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
         # 1. Create a project with transported solutes
-        # self.cmf_accounted_solutes = ["DOC", "DON", "dissolved_mineral_N"] # Manual
-        self.cmf_accounted_solutes = ["dissolved_mineral_N"] # Manual
+        self.cmf_accounted_solutes = ["DOC", "DON", "dissolved_mineral_N"] # Manual
+        # self.cmf_accounted_solutes = ["dissolved_mineral_N"] # Manual
 
         # Specific sting formating to create project in CMF (space separator between solutes)
         solute_string = ''
@@ -557,7 +557,7 @@ class SoilModel(Model):
                     self.uptake_nodes[(iy, iz, ix)] = uptake_node
 
             # Groundwater table boundary condition (skipped for a no-flux, pot-like bottom boundary)
-            self.ground_water_theta = 0.25 # TODO : add as a varying input
+            self.ground_water_theta = 0.9 * self.theta_S
             if not self.no_flux_bottom_boundary:
                 cell.layers[-1].theta = self.ground_water_theta
                 cell.layers[-1].potential = self.r_curve.MatricPotential(self.wetness_from_theta(self.ground_water_theta))
@@ -1014,19 +1014,19 @@ class SoilModel(Model):
 
     
     @actual
-    @rate
-    def _DOC(self, DOC, dry_soil_mass, hexose_exudation, phloem_hexose_exudation, mucilage_secretion, cells_release, hexose_uptake_from_soil, phloem_hexose_uptake_from_soil, amino_acids_diffusion_from_roots, amino_acids_diffusion_from_xylem, amino_acids_uptake):
-        C_rhizodeposition = (hexose_exudation + phloem_hexose_exudation + mucilage_secretion + cells_release - hexose_uptake_from_soil - phloem_hexose_uptake_from_soil 
+    @rate # Rate because it should impact the states of mimics beforehand
+    def _DOC(self, DOC, dry_soil_mass, hexose_exudation_massic, phloem_hexose_exudation_massic, mucilage_secretion_massic, cells_release_massic, hexose_uptake_from_soil_massic, phloem_hexose_uptake_from_soil_massic, amino_acids_diffusion_from_roots, amino_acids_diffusion_from_xylem, amino_acids_uptake):
+        C_rhizodeposition = (hexose_exudation_massic + phloem_hexose_exudation_massic + mucilage_secretion_massic + cells_release_massic - hexose_uptake_from_soil_massic - phloem_hexose_uptake_from_soil_massic 
                       + amino_acids_diffusion_from_roots + amino_acids_diffusion_from_xylem - amino_acids_uptake)
-        # print(hexose_exudation.max(), phloem_hexose_exudation.max(), mucilage_secretion.max(), cells_release.max(), hexose_uptake_from_soil.max(), phloem_hexose_uptake_from_soil.max(), 
+        # print(hexose_exudation_massic.max(), phloem_hexose_exudation_massic.max(), mucilage_secretion_massic.max(), cells_release_massic.max(), hexose_uptake_from_soil_massic.max(), phloem_hexose_uptake_from_soil_massic.max(), 
         #               amino_acids_diffusion_from_roots.max(), amino_acids_diffusion_from_xylem.min(), amino_acids_uptake.max())
         # print("RD", C_rhizodeposition.min(), C_rhizodeposition.mean(), C_rhizodeposition.max())
         return np.maximum(DOC + C_rhizodeposition * (self.time_step / dry_soil_mass), 0.)
         
     @actual
-    @rate
+    @rate # Rate because it should impact the states of mimics beforehand
     def _DON(self, DON, dry_soil_mass, amino_acids_diffusion_from_roots, amino_acids_diffusion_from_xylem, amino_acids_uptake):
-        N_rhizodeposition = (amino_acids_diffusion_from_roots + amino_acids_diffusion_from_xylem - amino_acids_uptake) / self.CN_ratio_amino_acids
+        N_rhizodeposition = (amino_acids_diffusion_from_roots + amino_acids_diffusion_from_xylem - amino_acids_uptake) * 14 / 12 / self.CN_ratio_amino_acids
         return np.maximum(DON + N_rhizodeposition * (self.time_step / dry_soil_mass), 0.)
     
 
@@ -1050,7 +1050,7 @@ class SoilModel(Model):
             dissolved_mineral_N = dissolved_mineral_N_previous - np.minimum(net_N_uptake, 0.) # TODO, check if a negative uptake would be valid to the model input
 
             # TODO Constant estimation here
-            baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y
+            baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y for a 30 cm soil
             litter_total_CN = 80.
             lignin_in_mass = 0.2
             C_in_mass = 0.45
@@ -1129,8 +1129,9 @@ class SoilModel(Model):
             temperature_array = res["TSLD"].loc[res["Layer"] >= 1].to_numpy() # We ignore layer 0 that gives surface temperature
             self.voxels['soil_temperature'][:] = temperature_array[None, :, None]
     
-    @actual
-    @rate
+    # @actual
+    # @rate
+    # Not active while cmf handles it
     def _voxel_mineral_N_fertilization(self, mineral_N_fertilization_rate, dry_soil_mass):
         return dry_soil_mass * mineral_N_fertilization_rate.mean() / dry_soil_mass.sum()
 
@@ -1211,19 +1212,22 @@ class SoilModel(Model):
         result[result < 0] = 0.
         return result
 
-    # @state
-    def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, voxel_mineral_N_fertilization):
-        balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
-            # mineral_N_net_mineralization
-            # + mineralN_diffusion_from_roots
-            # + mineralN_diffusion_from_xylem
-            # - mineralN_uptake
-            + voxel_mineral_N_fertilization
-            )
-        
-        balance[balance < 0] = 0
+    @state
+    def _dissolved_mineral_N(self, dissolved_mineral_N, dry_soil_mass, mineral_N_net_mineralization, mineralN_diffusion_from_roots, mineralN_diffusion_from_xylem, mineralN_uptake):
+        if self.run_mimics:
+            return dissolved_mineral_N
+        else:
+            balance = dissolved_mineral_N + (self.time_step / dry_soil_mass) * (
+                mineral_N_net_mineralization
+                + mineralN_diffusion_from_roots
+                + mineralN_diffusion_from_xylem
+                - mineralN_uptake
+                # + voxel_mineral_N_fertilization
+                )
+            
+            balance[balance < 0] = 0
 
-        return balance
+            return balance
     
 
     # @note Post state coupling variables
@@ -1251,9 +1255,9 @@ class SoilModel(Model):
     
     @segmentation
     @state
-    def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion, mucilage_degradation):
+    def _Cs_mucilage_soil(self, Cs_mucilage_soil, soil_moisture, voxel_volume, mucilage_secretion_massic, mucilage_degradation):
         balance = Cs_mucilage_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
-            mucilage_secretion
+            mucilage_secretion_massic
             - mucilage_degradation
         )
         balance[balance < 0.] = 0.
@@ -1261,9 +1265,9 @@ class SoilModel(Model):
     
     @segmentation
     @state
-    def _Cs_cells_soil(self, Cs_cells_soil, soil_moisture, voxel_volume, cells_release, cells_degradation):
+    def _Cs_cells_soil(self, Cs_cells_soil, soil_moisture, voxel_volume, cells_release_massic, cells_degradation):
         balance = Cs_cells_soil + (self.time_step / (soil_moisture * voxel_volume)) * (
-                cells_release
+                cells_release_massic
                 - cells_degradation
         )
         balance[balance < 0.] = 0.
@@ -1278,16 +1282,6 @@ class SoilModel(Model):
     @state
     def _water_volume(self, soil_moisture, voxel_volume):
         return soil_moisture * voxel_volume
-    
-    @state
-    def _water_potential_soil(self, voxel_volume, water_volume):
-        """
-        Water retention curve from van Genuchten 1980
-        """
-        m = 1 - (1/self.water_n)
-        return - (1 / self.water_alpha) * (
-                                            ((self.theta_S - self.theta_R) / ((water_volume / voxel_volume) - self.theta_R)) ** (1 / m) - 1 
-                                        )** (1 / self.water_n)
 
 
     def temperature_modification(self, soil_temperature=15, process_at_T_ref=1., T_ref=0., A=-0.05, B=3., C=1.):
