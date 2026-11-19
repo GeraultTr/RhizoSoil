@@ -382,9 +382,10 @@ def FXEQ_grid(state,
     out[14] = dDIN
     return out * time_step_in_hours
 
-def _solve_one_steady_state(params, bounds=(None, None), dt=1.0):
+def _solve_one_steady_state(params, bounds=(None, None), dt=1.0, x0=None):
     # Solve a single-voxel 15-var system with fsolve→lsq fallback
-    x0 = initialize_pools_grid((1,1,1)).ravel()  # (15,)
+    if x0 is None:
+        x0 = initialize_pools_grid((1,1,1)).ravel()  # (15,)
     def fun(x):
         s = x.reshape(15,1,1,1)
         r = FXEQ_grid(s, *params, RootUptakeIN=0.0, time_step_in_hours=dt, leaching=True)
@@ -403,43 +404,52 @@ def _solve_one_steady_state(params, bounds=(None, None), dt=1.0):
 
 class MIMICS_CN:
 
-    def __init__(self, time_step_in_hours=1, clay_percentage=np.array(())):
+    def __init__(self, time_step_in_hours=1, clay_percentage=np.array(()), litter_inputs=None, litter_CN=None,
+                 rhizodeposits_inputs=None, rhizodeposits_CN=None):
+        """
+        Pools are initialized at the steady state of each voxel, for the inputs (mgC/cm3/y) and C:N that will then be applied
+        at each step. Without inputs given, the former default (0.6 mgC/cm3/y of litter and 0.1 of rhizodeposits, C:N 15) is used.
+        """
 
         self.time_step_in_hours = time_step_in_hours
         self.clay_percentage = clay_percentage
         soil_shape = clay_percentage.shape
         pools_shape = (15, *soil_shape)
 
+        default = lambda x, value: np.full(soil_shape, value, dtype=np.float64) if x is None else np.broadcast_to(x, soil_shape)
+        litter_inputs, litter_CN = default(litter_inputs, 0.6), default(litter_CN, 15.)  # Bolinder 2007
+        rhizodeposits_inputs, rhizodeposits_CN = default(rhizodeposits_inputs, 0.1), default(rhizodeposits_CN, 15.)  # Pausch et Kuzyakov
 
         # Prepare output
         state = np.empty(pools_shape, dtype=np.float64)
 
-        # If clay are floats, use unique levels robustly
-        # (If they are exact bins like 10, 20, 30, you can drop 'round')
-        clay_levels = np.unique(clay_percentage)
+        # One steady state per unique combination of clay and inputs (e.g. one per depth for a layered input profile)
+        drivers = np.stack([clay_percentage, litter_inputs, litter_CN, rhizodeposits_inputs, rhizodeposits_CN], axis=-1).reshape(-1, 5)
+        levels, inverse = np.unique(drivers, axis=0, return_inverse=True)
+        inverse = inverse.reshape(soil_shape)
+        print(f"initializing MIMICS steady state for {len(levels)} clay and input levels")
 
-        for c in clay_levels:
-            print(f"initializing clay level {c}")
-            mask = clay_percentage == c
-
-            # Build 1×1×1 parameter fields for this clay level
-            scalar_shape = (1,1,1)
-            prop = 0.5
+        # Continuation from the largest inputs downwards: each solve starts from the previous solution, otherwise fsolve may land on
+        # another equilibrium where K-strategist microbes are extinct and litter accumulates
+        scalar_shape = (1,1,1)
+        previous_solution = None
+        for i in np.argsort(-(levels[:, 1] + levels[:, 3]), kind="stable"):
+            c, lit, lit_CN, rd, rd_CN = levels[i]
             params = get_parameters_rhizodeposits_grid(
-                annual_NPP_C = np.full(scalar_shape, 0.6), # Bolinder 2007
-                annual_RD_C  = np.full(scalar_shape, 0.1), # Pausch et Kuzyakov
+                annual_NPP_C = np.full(scalar_shape, lit),
+                annual_RD_C  = np.full(scalar_shape, rd),
                 clay_pct     = np.full(scalar_shape, c),
                 Tsoil        = np.full(scalar_shape, 10),
-                input_RD_CN  = np.full(scalar_shape, 15),
-                input_LIT_CN = np.full(scalar_shape, 15),
+                input_RD_CN  = np.full(scalar_shape, rd_CN),
+                input_LIT_CN = np.full(scalar_shape, lit_CN),
             )
 
             # Solve once for this class (voxel-sized residual)
-            sol_15 = _solve_one_steady_state(params, bounds=(0., 1e7), dt=time_step_in_hours)  # (15,)
+            sol_15 = _solve_one_steady_state(params, bounds=(0., 1e7), dt=time_step_in_hours, x0=previous_solution)  # (15,)
+            previous_solution = sol_15
 
             # Paste to all voxels of that class
-            # arr[:, mask] view has shape (15, M) → broadcast sol[:, None]
-            state[:, mask] = sol_15[:, None]
+            state[:, inverse == i] = sol_15[:, None]
 
         self.state = state
 
@@ -478,6 +488,8 @@ class MIMICS_CN:
         self.state = (steady_state_C_N if success_C_N else steady_state_C_N_guess).reshape(pools_shape)
 
 
+    DIN_deficit = 0.
+
     def __call__(self, soil_temperature=10, labile_OC=5e-1, labile_ON=1e-2, labile_IN=1e-6, net_N_uptake=0., litter_inputs=50., litter_CN=15, rhizodeposits_inputs=50., rhizodeposits_CN=15.):
         
         state = self.state
@@ -498,6 +510,10 @@ class MIMICS_CN:
 
         deriv = FXEQ_grid(state, *parameters, RootUptakeIN=net_N_uptake, time_step_in_hours=self.time_step_in_hours, leaching=False)
         state += deriv
+        # NOTE (uptake availability fix): a negative DIN can only come from root uptake (microbial gross uptake is at most (1-Nleak)*DIN),
+        # so the part clamped below is root demand that the voxel could not supply. It is exposed so that the caller can carry it
+        # over as a debt rather than creating that N.
+        self.DIN_deficit = np.maximum(-state[14], 0.)
         np.maximum(state, 0.0, out=state)
 
     

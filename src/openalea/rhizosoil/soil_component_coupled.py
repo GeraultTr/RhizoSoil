@@ -109,6 +109,14 @@ class SoilModel(Model):
     rain_intensity: float = declare(default=0., unit="mm/h", unit_comment="", description="hourly rain intensity",
                                                  value_comment="", references="", DOI="",
                                                  min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
+    # NOTE (leaching fix): before this variable existed, CMF had rain as its only surface flux and no evaporation at all,
+    # so every mm of rain ended up percolating through the profile and pushed nitrate out of the root zone as a piston
+    # (e.g. 55 mm of rain after fertilization displaced the fertilizer pulse by ~13 cm at theta ~0.43).
+    # Declared as a state variable like rain_intensity so that an hourly input-table column with the same name can override it
+    # (set soil_evaporation_from_meteo to False in that case). Otherwise it is updated every day from the ETPP column of the daily meteo file.
+    soil_evaporation_intensity: float = declare(default=1. / 24, unit="mm/h", unit_comment="of water", description="Potential evaporation from the soil surface, withdrawn from the top CMF layer and scaled by its relative wetness. Solutes are left behind in the soil.",
+                                                 value_comment="Fallback value only (1 mm/day). By default replaced daily by the potential evapotranspiration of the daily meteo file, which is 0.2 to 0.6 mm/day in December-February at Grignon.", references="", DOI="",
+                                                 min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
 
     # C related
     POC: float = declare(default=2.e-3, unit="adim", unit_comment="gC per g of dry soil", description="Particulate Organic Carbon massic concentration in soil", 
@@ -178,6 +186,19 @@ class SoilModel(Model):
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="intensive", edit_by="user")
     water_volume: float = declare(default=0.25e-6, unit="m3", unit_comment="", description="Volume of the water in the soil element in contact with a the root segment",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    # NOTE (uptake availability fix): the plant computes its mineral N uptake from the soil concentration of the previous step,
+    # and may therefore request more N than what remains in the voxel within one time step. The excess used to be silently
+    # cancelled by clamping the soil pool to 0, i.e. N given to the plant was created out of nothing. That unmet part is now kept as a
+    # debt of the voxel, repaid from the next mineral N inputs (mineralization, fertilization, transport), so that N is conserved.
+    mineral_N_diffusion: float = declare(default=0., unit="gN.s-1", unit_comment="of mineral nitrogen", description="Net mineral N gained by the voxel through diffusion from its neighbors (negative when it loses N to them)",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    mineral_N_leaching: float = declare(default=0., unit="gN.s-1", unit_comment="of mineral nitrogen", description="Mineral N leaving the soil profile with free drainage water, attributed to the bottom voxel of each column (0 elsewhere)",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
+    mineralN_uptake_debt: float = declare(default=0., unit="gN", unit_comment="of mineral nitrogen", description="Mineral N already given to roots but not yet available in the voxel, to be withdrawn from the next mineral N inputs of this voxel",
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="state_variable", by="model_soil", state_variable_type="extensive", edit_by="user")
     actual_water_uptake: float = declare(default=0., unit="m3.s-1", unit_comment="of water", description="Water uptake actually withdrawn from the voxel, after clamping the requested water_uptake to the water locally available in that voxel this timestep, to keep the CMF Richards solver from being asked to extract more than physically exists",
@@ -263,7 +284,46 @@ class SoilModel(Model):
     C_solutes_background: float = declare(default=0, unit="mol.m-3", unit_comment="", description="Background non C and non N solutes concentration in soil",
                                         value_comment="Raw estimation to align with inorganic N range for now", references="TODO", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
-    no_flux_bottom_boundary: bool = declare(default=False, unit="adim", unit_comment="", description="If True, the bottom of the soil profile is a no-flux (impermeable) boundary, as in a pot experiment. If False (default), the bottom layer is forced to a fixed groundwater moisture (ground_water_theta), as for a field scenario with a shallow water table.",
+    no_flux_bottom_boundary: bool = declare(default=False, unit="adim", unit_comment="", description="If True, the bottom of the soil profile is a no-flux (impermeable) boundary, as in a pot experiment. If False (default), the bottom layer drains freely under gravity (unit hydraulic gradient), as for a field soil without shallow water table.",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    soil_water_spinup: bool = declare(default=True, unit="adim", unit_comment="", description="If True (and free drainage), the initial moisture profile is obtained by running the water balance of one soil column (rain, evaporation, free drainage) with the daily meteo from the spin-up starting date to the simulation starting date, starting from the soil_moisture initialization. This replaces the initial soil_moisture of the scenario.",
+                                        value_comment="Avoids starting from a uniform moisture that the free drainage boundary would quickly drain: the profile starts in the state left by the previous months (autumn recharge for a December start).", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    cmf_parallel_threads: int = declare(default=1, unit="adim", unit_comment="", description="Number of OpenMP threads used by the CMF solvers of this process",
+                                        value_comment="CMF parallelizes every flux evaluation with OpenMP and uses all cores by default. For a grid of ~1000 layers, and even more for the single column of the water spin-up, the synchronization overhead dominates: with one other simulation running, the spin-up column was 250 times slower with all 14 cores than with 1 thread, and the scene grid 4.5 times slower. With several simulations launched in parallel, the cores are oversubscribed and the spin-up seemed to never end.", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    mineral_N_diffusion_between_voxels: bool = declare(default=True, unit="adim", unit_comment="", description="If True, dissolved mineral N diffuses between neighboring voxels after each CMF transport step (CMF only transports solutes by advection with water fluxes)",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_input_rate: float = declare(default=1., unit="mgC.cm-3.y-1", unit_comment="", description="Annual residue C input to MIMICS in the plough layer, also used for its steady-state initialization",
+                                        value_comment="About 300 gC/m2/y over 30 cm", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_input_plough_depth: float = declare(default=0.3, unit="m", unit_comment="", description="Depth over which residue inputs are constant",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_input_decay_length: float = declare(default=0.2, unit="m", unit_comment="", description="e-folding length of residue inputs below the plough layer",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_total_CN: float = declare(default=80., unit="adim", unit_comment="", description="C:N ratio of residues, used with the lignin fraction to split them into metabolic and structural litter (Daycent)",
+                                        value_comment="As this split is C-weighted, the effective C:N of N inputs is about 32", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_metabolic_CN: float = declare(default=15., unit="adim", unit_comment="", description="C:N ratio of metabolic litter",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_lignin_fraction: float = declare(default=0.2, unit="adim", unit_comment="", description="Lignin mass fraction of residues",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    litter_C_fraction: float = declare(default=0.45, unit="adim", unit_comment="", description="C mass fraction of residues",
+                                        value_comment="", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    DOM_dissolved_fraction: float = declare(default=5e-3, unit="adim", unit_comment="", description="Fraction of the MIMICS available SOM pool (SOM_3) in soil solution, i.e. the voxel DOC and DON exposed to transport and root uptake",
+                                        value_comment="Gives about 15 mgC/L of DOC and 1.5 mgN/L of DON at MIMICS steady state, within field soil solution ranges", references="", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    nitrate_diffusion_coefficient_water: float = declare(default=1.902e-9, unit="m2.s-1", unit_comment="", description="Molecular diffusion coefficient of nitrate in free water at 25 °C, corrected for temperature with the Stokes-Einstein relation",
+                                        value_comment="", references="CRC Handbook of Chemistry and Physics, ionic diffusion coefficients in water at infinite dilution", DOI="",
+                                       min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
+    soil_evaporation_from_meteo: bool = declare(default=True, unit="adim", unit_comment="", description="If True, soil_evaporation_intensity is set every day from the potential evapotranspiration (ETPP column) of the daily meteo file. Set to False when providing soil_evaporation_intensity through an hourly input table.",
                                         value_comment="", references="", DOI="",
                                        min_value="", max_value="", variable_type="parameter", by="model_soil", state_variable_type="", edit_by="user")
     max_uptake_fraction_of_available_water: float = declare(default=0.75, unit="adim", unit_comment="", description="Upper bound on water_uptake actually handed to the CMF solver, expressed as a fraction of the water available above theta_R in the voxel this timestep. Prevents a prescribed uptake flux from driving a voxel's water storage negative and crashing the Richards solver.",
@@ -437,13 +497,35 @@ class SoilModel(Model):
         self.voxels["C_hexose_soil"] = self.voxels["DOC"] * self.voxels["dry_soil_mass"] / self.voxels["water_volume"] / 6 / 12
         self.voxels["Cv_solutes_soil"] = self.voxels["C_mineralN_soil"] # Until we are sure of proper initialization and balance of these different concentrations
 
+        # Daily meteo and dates shared by the soil water spin-up, the daily evaporation and the Campbell temperature model
+        self.daily_meteo_df = pd.read_csv('inputs/daily_grignon_meteo.csv', sep=",")
+        self.daily_meteo_df["DATE"] = pd.to_datetime({"year": self.daily_meteo_df["AN"], "month": self.daily_meteo_df["MOIS"], "day": self.daily_meteo_df["JOUR"]}, errors="coerce")
+        self.spinup_starting_date = pd.to_datetime("1998-01-01")
+        self.simulation_initial_date = pd.to_datetime("1998-12-17")
+
         # Initiate the transport model
+        # NOTE (leaching fix): CMF cells were built with the nominal voxel_length (3 cm) while voxels are resized to fit the scene
+        # (2.5 cm here). CMF layers were then 1.44 times larger than the voxels they represent, so a prescribed root water uptake (m3.s-1)
+        # dried them 1.44 times too slowly. The actual voxel dimensions are now used.
         self.initiate_cmf(nx=self.voxel_number_x, ny=self.voxel_number_y, nz=self.voxel_number_z,
-                          dx=voxel_length, dy=voxel_length, dz=voxel_height)
+                          dx=self.voxel_dx, dy=self.voxel_dy, dz=self.voxel_dz)
 
         if self.run_mimics:
+            # NOTE (litter profile fix): the steady state was solved for other inputs (0.7 mgC/cm3/y at C:N 15) than those applied at
+            # each step (1 mgC/cm3/y at C:N 80, uniform over the whole profile), so pools drifted from the start. Both now use the same
+            # residue inputs, decreasing below the plough layer.
+            self._litter_inputs = self.litter_inputs_profile()
+            li = self._litter_inputs
             self.mimics = MIMICS_CN(time_step_in_hours=self.time_step / 3600,
-                                    clay_percentage=self.voxels["clay_percentage"])
+                                    clay_percentage=self.voxels["clay_percentage"],
+                                    litter_inputs=li["structural"], litter_CN=li["structural_CN"],
+                                    rhizodeposits_inputs=li["metabolic"], rhizodeposits_CN=li["metabolic_CN"])
+            # NOTE (DOM fix): the voxel DOC and DON are only the dissolved fraction of the MIMICS available pool. Overwriting that pool
+            # with the scenario values (0 or 2e-7 g/g, 2500 times below steady state) starved microbes and cut mineralization by about 5.
+            conv = 1e6 * self.voxels["voxel_volume"] / self.voxels["dry_soil_mass"] / 1e3 # mg/cm3 to g/g
+            self.voxels["DOC"] = self.DOM_dissolved_fraction * self.mimics.SOC_available * conv
+            self.voxels["DON"] = self.DOM_dissolved_fraction * self.mimics.SON_available * conv
+            self._DOC_written, self._DON_written = self.voxels["DOC"].copy(), self.voxels["DON"].copy()
             self.mimics_cn_states()
 
         self.initiate_campbell()
@@ -457,6 +539,9 @@ class SoilModel(Model):
         return (theta - self.theta_R) / (self.theta_S - self.theta_R)
 
     def initiate_cmf(self, nx, ny, nz, dx, dy, dz):
+        # Limit CMF's OpenMP threads before any solver is built (spin-up column included), see cmf_parallel_threads.
+        # NOTE: this was why, with several simulations launched in parallel, the spin-up never ended from the second one on.
+        cmf.set_parallel_threads(int(self.cmf_parallel_threads))
         # 1. Create a project with transported solutes
         self.cmf_accounted_solutes = ["DOC", "DON", "dissolved_mineral_N"] # Manual
         # self.cmf_accounted_solutes = ["dissolved_mineral_N"] # Manual
@@ -469,8 +554,8 @@ class SoilModel(Model):
                 solute_string += ' '
 
         self.cmf_project = cmf.project(solute_string)
-        # nitrate , _ , _ = self.cmf_project.solutes
-        nitrate, = self.cmf_project.solutes
+        # Retrieve the nitrate solute by name: a positional unpacking only worked while dissolved_mineral_N was the single transported solute
+        nitrate = self.cmf_project.solutes[self.cmf_accounted_solutes.index("dissolved_mineral_N")]
 
         # Retention curve with soil parameters
         self.r_curve=cmf.VanGenuchtenMualem(Ksat=self.saturated_hydraulic_conductivity, # m.day-1
@@ -513,11 +598,11 @@ class SoilModel(Model):
                 
                 # Column neighbor (y+1)
                 if iy < ny-1:
-                    cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, iy + 1]], dx)
+                    cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, iy + 1]], dy)
                 else:
                     if symetry:
                         # If scene is symetrical the last element in column is neighbor to first element in column
-                        cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, 0]], dx)
+                        cell.topology.AddNeighbor(self.cmf_cells[self.cmf_id_grid[ix, 0]], dy)
 
         # (3bis OPTIONAL) If the scene is real 3D, we install connections with lateral richards flux and advection 
         if real_3D:
@@ -526,16 +611,33 @@ class SoilModel(Model):
         
         # 4. Set initial conditions
 
-        # Retreive volumic concentrations of solutes from initialized massic concentrations
-        volumic_concentrations = {}
-        for solute_name in self.cmf_accounted_solutes:
-            volumic_concentrations[solute_name] = self.voxels[solute_name] * self.voxels["dry_soil_mass"] / (self.voxels["soil_moisture"] * self.voxels["voxel_volume"])
+        # NOTE (free drainage): the bottom boundary used to be a fixed moisture of 0.9 * theta_S at 1 m depth, i.e. a shallow water table that
+        # does not exist at this site, and that kept the whole profile close to saturation through capillary rise. It is replaced by
+        # free drainage (see the end of this function). With these hydraulic parameters, conductivity is already ~5 mm/day at theta = 0.31,
+        # so a uniform 0.31 start would drain strongly during the first weeks. The initial profile is therefore taken from a one-column
+        # water balance spin-up over the months preceding the simulation, which gives the moisture state of the season.
+        if not self.no_flux_bottom_boundary and self.soil_water_spinup:
+            initial_profile = self.soil_water_spinup_profile(nz=nz, dz=dz,
+                                                             initial_profile=self.voxels["soil_moisture"].mean(axis=(0, 2)))
+            self.voxels["soil_moisture"][:] = initial_profile[None, :, None]
+            self.voxels["water_volume"] = self.voxels["voxel_volume"] * self.voxels["soil_moisture"]
+
+        # NOTE (leaching fix): solutes are exchanged with CMF as AMOUNTS (g per voxel), no longer as concentrations derived from soil_moisture.
+        # CMF stores layer water as wetness * porosity * layer volume, i.e. without the residual water theta_R, while layer.theta (used as
+        # soil_moisture) includes it. Converting mass -> concentration with soil_moisture and back with a different soil_moisture therefore
+        # did not conserve solutes: drying created N and wetting (rain) destroyed it (about 0.5 % for a 0.01 change in theta), even with no
+        # transport at all. Amounts are conserved by construction. The ratio below only accounts for any CMF layer / voxel volume mismatch.
+        self.cmf_to_voxel_volume_ratio = (dx * dy * dz) / self.voxels["voxel_volume"]
+        voxel_solute_amounts = {solute_name: self.voxels[solute_name] * self.voxels["dry_soil_mass"] * self.cmf_to_voxel_volume_ratio
+                                for solute_name in self.cmf_accounted_solutes}
 
         # Dynamic storage of rainfall nodes for each cells
         self.rainfall_nodes = {}
         # Dynamic storage of a conservative sink for each layer, used to withdraw root water uptake from cmf's
         # own mass-balanced integration instead of overwriting theta/potential from outside every hour.
         self.uptake_nodes = {}
+        # Dynamic storage of an evaporation sink on the top layer of each cell (see soil_evaporation_intensity)
+        self.evaporation_nodes = {}
         for ix in range(nx):
             for iy in range(ny):
                 cell = self.cmf_cells[self.cmf_id_grid[ix, iy]]
@@ -547,20 +649,45 @@ class SoilModel(Model):
                 self.rainfall_nodes[self.cmf_id_grid[ix, iy]] = rs
 
                 for iz, l in enumerate(cell.layers):
-                    l.theta = self.voxels["soil_moisture"][iy, iz, ix]
-                    l.potential = self.r_curve.MatricPotential(self.wetness_from_theta(l.theta)) # Must be initialized
+                    # NOTE (leaching fix): moisture is now imposed through the wetness only. Two CMF conventions made the previous
+                    # "l.theta = ...; l.potential = MatricPotential(...)" initialization wrong:
+                    #   1) layer.potential is the TOTAL head (matric + elevation), so assigning it a matric potential overrode theta
+                    #      with a wetter state increasing with depth (0.33 at the top to 0.38 at 1 m instead of 0.31), and turned the
+                    #      bottom boundary into a saturated water table. This is why the whole profile was close to saturation and why
+                    #      all rain percolated.
+                    #   2) the layer.theta setter ignores theta_r (it sets wetness = theta / phi) while the theta getter does not, so even
+                    #      without the potential assignment, 0.31 read back as 0.329.
+                    # Since solute masses are converted with soil_moisture both ways, any such mismatch also created ~6 to 14 % of
+                    # mineral N at the first step. Setting the wetness gives an exact round trip and a consistent potential.
+                    l.wetness = self.wetness_from_theta(self.voxels["soil_moisture"][iy, iz, ix])
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
+                        l[solute].state = voxel_solute_amounts[solute_name][iy, iz, ix]
 
                     uptake_node = cmf.NeumannBoundary.create(l)
                     uptake_node.set_flux(0.)
+                    # NOTE (uptake coupling fix): by default a CMF flux connection carries solutes at the concentration of the node
+                    # water leaves from, so root water uptake was also removing nitrate (and DOC, DON) by mass flow. Root solute uptake
+                    # is already fully computed by the plant models (active uptake, plus the apoplastic mass flow term of Root-CyNAPS),
+                    # and sent to the soil as mineralN_uptake, so the CMF sink must only extract water: solutes are left in the voxel.
+                    for connection in uptake_node.connections:
+                        for solute in self.cmf_project.solutes:
+                            connection.set_tracer_filter(solute, 0.)
                     self.uptake_nodes[(iy, iz, ix)] = uptake_node
 
-            # Groundwater table boundary condition (skipped for a no-flux, pot-like bottom boundary)
-            self.ground_water_theta = 0.9 * self.theta_S
-            if not self.no_flux_bottom_boundary:
-                cell.layers[-1].theta = self.ground_water_theta
-                cell.layers[-1].potential = self.r_curve.MatricPotential(self.wetness_from_theta(self.ground_water_theta))
+                # Evaporation only removes water: solutes are concentrated in the top layer instead of leaving the soil
+                evaporation_node = cmf.NeumannBoundary.create(cell.layers[0])
+                evaporation_node.set_flux(0.)
+                for connection in evaporation_node.connections:
+                    for solute in self.cmf_project.solutes:
+                        connection.set_tracer_filter(solute, 0.)
+                self.evaporation_nodes[self.cmf_id_grid[ix, iy]] = evaporation_node
+
+        # 4bis. Free drainage bottom boundary: the bottom layer of each column drains at its unsaturated conductivity (unit gradient)
+        # into an outlet that collects drainage water and the solutes it carries (mineral_N_leaching).
+        if not self.no_flux_bottom_boundary:
+            self.drainage_outlet = self.cmf_project.NewOutlet("drainage", 0., 0., -(nz * dz) - 1.)
+            for cell in self.cmf_cells.values():
+                cmf.FreeDrainagePercolation(cell.layers[-1], self.drainage_outlet)
 
         # 5. Set up integrators (water + solute)
         water_integrator = cmf.ImplicitEuler(self.cmf_project, solve_tolerance)
@@ -568,9 +695,48 @@ class SoilModel(Model):
         self.cmf_solver = cmf.SoluteWaterIntegrator(self.cmf_project.solutes, solute_integrator, water_integrator, self.cmf_project)
 
 
+    def soil_water_spinup_profile(self, nz, dz, initial_profile):
+        """
+        Moisture profile at the simulation starting date, from a daily water balance of a single bare soil column with the same retention
+        curve and bottom boundary as the simulated scene. Inputs are the daily rain (RR) and potential evaporation (ETPP) of the daily meteo file.
+        The scene is horizontally homogeneous at initialization, so one column is enough and is copied to every column.
+
+        Assumptions: bare soil before sowing (no crop transpiration during the spin-up), evaporation limited by top layer wetness as in
+        cmf_transport, and daily rain spread evenly over the day.
+        """
+        project = cmf.project("")
+        column = project.NewCell(0., 0., 0., 1.)
+        for iz in range(nz):
+            column.add_layer((iz + 1) * dz, self.r_curve)
+        column.install_connection(cmf.Richards)
+        for iz, layer in enumerate(column.layers):
+            layer.wetness = min(max(self.wetness_from_theta(initial_profile[iz]), 1e-3), 1.)
+
+        rain = cmf.ConstantRainSource(project, cmf.point(0, 0, 0), 0.)
+        column.rain_source = rain
+        evaporation = cmf.NeumannBoundary.create(column.layers[0])
+        outlet = project.NewOutlet("drainage", 0., 0., -(nz * dz) - 1.)
+        cmf.FreeDrainagePercolation(column.layers[-1], outlet)
+        # CVODE (adaptive) rather than ImplicitEuler: ImplicitEuler fails on daily steps with non finite Richards fluxes
+        solver = cmf.CVodeDense(project, 1e-9)
+
+        meteo = self.daily_meteo_df.set_index("DATE")
+        n_days = (self.simulation_initial_date - self.spinup_starting_date).days
+        print(f"[INFO] soil water spin-up over {n_days} days")
+        for day in range(n_days):
+            date = self.spinup_starting_date + pd.Timedelta(days=day)
+            rain.intensity = float(meteo.loc[date, "RR"]) if date in meteo.index else 0. # mm.day-1
+            top_wetness = min(max(column.layers[0].wetness, 0.), 1.)
+            evaporation_rate = float(meteo.loc[date, "ETPP"]) if date in meteo.index else 0.
+            evaporation.set_flux(-evaporation_rate / 1e3 * top_wetness * column.area) # m3.day-1
+            solver(solver.t + cmf.day)
+
+        profile = np.array([layer.theta for layer in column.layers])
+        print(f"[INFO] soil water spin-up done, moisture top {profile[0]:.3f}, 30 cm {profile[min(int(0.3 / dz), nz - 1)]:.3f}, bottom {profile[-1]:.3f}")
+        return profile
+
     def initiate_campbell(self):
-        self.campbell_input_df = pd.read_csv('inputs/daily_grignon_meteo.csv', sep=",")
-        self.campbell_input_df["DATE"] = pd.to_datetime({"year": self.campbell_input_df["AN"], "month": self.campbell_input_df["MOIS"], "day": self.campbell_input_df["JOUR"]}, errors="coerce")
+        self.campbell_input_df = self.daily_meteo_df
 
         nb_layers = self.voxels['z2'].shape[1]
         soil_depth = self.voxels['z2'].max() * 100 # m to cm
@@ -605,8 +771,8 @@ class SoilModel(Model):
                                                     TAMP=8.0 # based on monthly average (max-min)/2, 12.6 if min/max daily, if hourly will obviously be different TODO sort out
                                                     )
 
-        spinup_starting_date = pd.to_datetime("1998-01-01")
-        initial_date = pd.to_datetime("1998-12-17")
+        spinup_starting_date = self.spinup_starting_date
+        initial_date = self.simulation_initial_date
         self.previous_DOY = 347
         current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == spinup_starting_date]
         sunrise = current_inputs["SUNUP"].iat[0]
@@ -663,6 +829,20 @@ class SoilModel(Model):
         self.current_date = initial_date
         temperature_array = res["TSLD"].loc[res["Layer"] >= 1].to_numpy() # We ignore layer 0 that gives surface temperature
         self.voxels['soil_temperature'][:] = temperature_array[None, :, None]
+        self.update_daily_evaporation()
+
+    def daily_potential_evaporation(self, date):
+        """Potential evaporation of the given day from the daily meteo file (mm.day-1), 0 if the date is missing"""
+        current_inputs = self.daily_meteo_df.loc[self.daily_meteo_df["DATE"] == date]
+        return float(current_inputs["ETPP"].iat[0]) if len(current_inputs) > 0 else 0.
+
+    def update_daily_evaporation(self):
+        """
+        NOTE (free drainage): soil evaporation follows the season instead of a constant value. A constant 1 mm/day is about twice to five
+        times the December-February potential evapotranspiration at this site, which would have dried the topsoil too much in winter.
+        """
+        if self.soil_evaporation_from_meteo:
+            self.voxels["soil_evaporation_intensity"].fill(self.daily_potential_evaporation(self.current_date) / 24) # mm.day-1 to mm.h-1
 
 
     def voxel_grid_to_self(self, name, init_value):
@@ -964,14 +1144,14 @@ class SoilModel(Model):
         Water and solute transport based on the CMF model
         """
         rain_intensity = self.voxels["rain_intensity"][0, 0, 0] * 24 # mm.day-1 are used by cmf : https://philippkraft.github.io/cmf/cmf_tut_meteostation.html?utm_source=chatgpt.com
+        evaporation_intensity = self.voxels["soil_evaporation_intensity"][0, 0, 0] * 24 / 1e3 # mm.h-1 to m.day-1
         mineral_N_fertilization_amount = self.voxels["mineral_N_fertilization_rate"][0, 0, 0] * self.time_step # gN
         fertilization_volume = self.scene_xrange * self.scene_yrange * rain_intensity / 24 / 1e3 # m3 for current hour, # NOTE should be included in rain input time series
         fertigation_no3 = mineral_N_fertilization_amount / fertilization_volume if fertilization_volume > 0. else 0.
 
-        # First retreive volumic concentrations of solutes from CN-biochem model
-        volumic_concentrations = {}
-        for solute_name in self.cmf_accounted_solutes:
-            volumic_concentrations[solute_name] = self.voxels[solute_name] * self.voxels["dry_soil_mass"] / (self.voxels["soil_moisture"] * self.voxels["voxel_volume"])
+        # First retreive solute amounts from the CN-biochem model (see initiate_cmf for why amounts and not concentrations are exchanged)
+        voxel_solute_amounts = {solute_name: self.voxels[solute_name] * self.voxels["dry_soil_mass"] * self.cmf_to_voxel_volume_ratio
+                                for solute_name in self.cmf_accounted_solutes}
 
         # Clamp the requested water_uptake to what is actually available in each voxel this timestep, so that a
         # locally over-demanding root never asks the CMF solver to extract more water than the voxel holds.
@@ -987,30 +1167,107 @@ class SoilModel(Model):
                 cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
                 self.rainfall_nodes[self.cmf_id_grid[ix][iy]].intensity = rain_intensity
                 self.rainfall_nodes[self.cmf_id_grid[ix][iy]].set_conc(self.cmf_project.solutes[self.cmf_accounted_solutes.index("dissolved_mineral_N")], fertigation_no3)
-                if not self.no_flux_bottom_boundary:
-                    cell.layers[-1].theta = self.ground_water_theta
-                    cell.layers[-1].potential = self.r_curve.MatricPotential(self.wetness_from_theta(self.ground_water_theta))
+                # NOTE (free drainage): the former fixed-moisture water table reset of the bottom layer is gone; free drainage is a CMF
+                # connection installed once in initiate_cmf. (The reset also created N on every capillary supply from the water table:
+                # in a 48 h test the scene gained 10 times more mineral N with it than with a closed bottom.)
+
+                # NOTE (leaching fix): soil evaporation from the top layer. Actual evaporation is reduced proportionally to the relative
+                # wetness of that layer (simple supply limitation, avoids drying it below theta_R). Canopy shading is not accounted for.
+                top_wetness = min(max(self.wetness_from_theta(self.voxels["soil_moisture"][iy, 0, ix]), 0.), 1.)
+                self.evaporation_nodes[self.cmf_id_grid[ix][iy]].set_flux(-evaporation_intensity * top_wetness * cell.area) # m3.day-1
 
                 # Other layers keep evolving under cmf's own mass-conservative state between calls: we only hand it
                 # the current root water uptake as a prescribed sink flux, instead of overwriting theta/potential.
                 for iz, l in enumerate(cell.layers):
                     self.uptake_nodes[(iy, iz, ix)].set_flux(-self.voxels["actual_water_uptake"][iy, iz, ix] * 24 * 3600) # m3.s-1 to m3.day-1
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        l.conc(solute, volumic_concentrations[solute_name][iy, iz, ix])
+                        l[solute].state = voxel_solute_amounts[solute_name][iy, iz, ix]
+
+        # Fertigation amount entering each column with rain this step (CMF units), for the leaching balance below
+        rain_volume_per_cell = rain_intensity / 1e3 * self.voxel_dx * self.voxel_dy * self.time_step / (24 * 3600) # m3
+        fertigation_per_cell = fertigation_no3 * rain_volume_per_cell
+        mineral_N_index = self.cmf_accounted_solutes.index("dissolved_mineral_N")
+        mineral_N_solute = self.cmf_project.solutes[mineral_N_index]
 
         # Even for a single time_step, solver needs to iterate to actually run on its own
         [t for t in self.cmf_solver.run(self.cmf_solver.t, self.cmf_solver.t + cmf.h * self.time_step/3600, cmf.h * self.time_step/3600)]
 
         # 7. Extract results as NumPy arrays
         # TODO : optimization only because this already runs well, but in theory, accessing arrays through indices is highly unefficient and cmf fully with arrays would be better, but didn't find how to do it yet
+        self.voxels["mineral_N_leaching"].fill(0.)
         for ix in range(self.voxel_number_x):
             for iy in range(self.voxel_number_y):
                 cell = self.cmf_cells[self.cmf_id_grid[ix][iy]]
+                # Root water uptake and evaporation carry no solutes, so the only mineral N leaving a column is free drainage:
+                # leaching = amount before + fertigation - amount after
+                if not self.no_flux_bottom_boundary:
+                    amount_before = voxel_solute_amounts["dissolved_mineral_N"][iy, :, ix].sum()
+                    amount_after = sum(l[mineral_N_solute].state for l in cell.layers)
+                    self.voxels["mineral_N_leaching"][iy, -1, ix] = (amount_before + fertigation_per_cell - amount_after) / self.cmf_to_voxel_volume_ratio[iy, -1, ix] / self.time_step
                 for iz, l in enumerate(cell.layers):
                     self.voxels["soil_moisture"][iy, iz, ix] = l.theta
                     self.voxels["water_potential_soil"][iy, iz, ix] = (l.potential - l.position[2]) * 1000 * 9.81 # Convert to Pa
                     for solute_name, solute in zip(self.cmf_accounted_solutes, self.cmf_project.solutes):
-                        self.voxels[solute_name][iy, iz, ix] = l.conc(solute) * (self.voxels["soil_moisture"][iy, iz, ix] * self.voxels["voxel_volume"][iy, iz, ix]) / self.voxels["dry_soil_mass"][iy, iz, ix]
+                        self.voxels[solute_name][iy, iz, ix] = l[solute].state / self.cmf_to_voxel_volume_ratio[iy, iz, ix] / self.voxels["dry_soil_mass"][iy, iz, ix]
+
+        if self.mineral_N_diffusion_between_voxels:
+            self.mineral_N_diffusion_step()
+
+    def mineral_N_diffusion_step(self):
+        """
+        Explicit diffusion of dissolved mineral N between face-neighboring voxels, applied after the CMF advective transport.
+
+        NOTE: CMF moves solutes only with water fluxes. Root water uptake is small here, so nothing resupplied a voxel depleted by roots,
+        while unrooted neighbors at the same depth held 2 to 5 times more N. Estimated for the 7.5 cm layer of a previous run, diffusion
+        through a single face would already bring ~2e-7 gN/h against a root uptake of ~3e-7 gN/h in the rooted voxel.
+
+        - Gradient: concentration in soil water, C = mass / (theta * voxel_volume).
+        - Effective diffusion coefficient (per unit soil area): De = theta * tau * Dw, with the Millington-Quirk tortuosity
+          tau = theta^(7/3) / phi^2 (phi approximated by theta_S), and Dw corrected for temperature with Stokes-Einstein (T / viscosity).
+        - Face coefficient: harmonic mean of the two voxels. Boundaries: periodic in x and y (as the lateral CMF connections of a
+          symmetrical scene), no flux at the soil surface and at the bottom (vertical exchanges there are advective, handled by CMF).
+        - Fluxes are antisymmetric, so N is conserved. Sub-steps keep the explicit scheme stable (one step per hour in practice).
+        """
+        v = self.voxels
+        theta = np.maximum(v["soil_moisture"], 1e-6)
+        water_volume = theta * v["voxel_volume"]
+        mass = v["dissolved_mineral_N"] * v["dry_soil_mass"] # gN per voxel
+
+        T = v["soil_temperature"] + 273.15
+        water_viscosity = 2.414e-5 * 10 ** (247.8 / (T - 140.)) # Pa.s, Vogel equation
+        Dw = self.nitrate_diffusion_coefficient_water * (T / 298.15) * (8.90e-4 / water_viscosity)
+        tortuosity = theta ** (7. / 3.) / self.theta_S ** 2
+        De = theta * tortuosity * Dw # m2.s-1
+
+        dx, dy, dz = self.voxel_dx, self.voxel_dy, self.voxel_dz
+        # (axis, distance between voxel centers, exchange area, periodic)
+        directions = ((2, dx, dy * dz, True), (0, dy, dx * dz, True), (1, dz, dx * dy, False))
+
+        # Stability of the explicit scheme on concentrations: dt * D_apparent * sum(1/d^2) <= 1/2, with D_apparent = tau * Dw
+        stable_time_step = 0.5 / ((tortuosity * Dw).max() * (2 / dx**2 + 2 / dy**2 + 2 / dz**2))
+        n_substeps = max(1, int(np.ceil(self.time_step / stable_time_step)))
+        dt = self.time_step / n_substeps
+
+        net_gain = np.zeros_like(mass)
+        for _ in range(n_substeps):
+            C = mass / water_volume # gN.m-3 of soil water
+            gain = np.zeros_like(mass)
+            for axis, distance, area, periodic in directions:
+                De_next = np.roll(De, -1, axis=axis)
+                De_face = 2 * De * De_next / np.maximum(De + De_next, 1e-300)
+                # flux from each voxel to its +1 neighbor along this axis (gN.s-1)
+                flux = De_face * (C - np.roll(C, -1, axis=axis)) / distance * area
+                if not periodic:
+                    # no exchange between the last and the first layer
+                    index = [slice(None)] * flux.ndim
+                    index[axis] = -1
+                    flux[tuple(index)] = 0.
+                gain += np.roll(flux, 1, axis=axis) - flux
+            mass += gain * dt
+            net_gain += gain * dt
+
+        v["dissolved_mineral_N"] = mass / v["dry_soil_mass"]
+        v["mineral_N_diffusion"] = net_gain / self.time_step
 
     
     @actual
@@ -1030,6 +1287,23 @@ class SoilModel(Model):
         return np.maximum(DON + N_rhizodeposition * (self.time_step / dry_soil_mass), 0.)
     
 
+    def litter_inputs_profile(self):
+        """
+        Annual residue inputs to MIMICS per voxel (mgC.cm-3.y-1), split into metabolic and structural litter as in Daycent.
+        Constant over the plough layer, then exponentially decreasing with depth.
+        """
+        z_mean = (self.voxels["z1"] + self.voxels["z2"]) / 2
+        depth_factor = np.where(z_mean <= self.litter_input_plough_depth, 1.,
+                                np.exp(-(z_mean - self.litter_input_plough_depth) / self.litter_input_decay_length))
+        total_input = self.litter_input_rate * depth_factor
+
+        N_in_mass = self.litter_C_fraction / self.litter_total_CN
+        fmet = 0.85 - 0.013 * self.litter_lignin_fraction / N_in_mass
+        structural_CN = (self.litter_total_CN - self.litter_metabolic_CN * fmet) / (1 - fmet)
+
+        return dict(structural=total_input * (1 - fmet), structural_CN=np.full_like(total_input, structural_CN),
+                    metabolic=total_input * fmet, metabolic_CN=np.full_like(total_input, self.litter_metabolic_CN))
+
     @actual
     @state
     def mimics_cn_states(self):
@@ -1037,8 +1311,11 @@ class SoilModel(Model):
             soil_temperature = self.voxels["soil_temperature"]
             voxel_volume = self.voxels["voxel_volume"]
             dry_soil_mass = self.voxels["dry_soil_mass"]
-            DOC = 1e3 * self.voxels["DOC"] * dry_soil_mass / voxel_volume / 1e6 # gC.g-1 soil to mgC/cm3
-            DON = 1e3 * self.voxels["DON"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
+            # The MIMICS available pool only receives what changed in its dissolved fraction since the last write
+            # (rhizodeposition, root uptake, CMF transport), instead of being overwritten by it
+            to_mg = 1e3 * dry_soil_mass / voxel_volume / 1e6 # g.g-1 soil to mg/cm3
+            DOC = np.maximum(self.mimics.SOC_available + (self.voxels["DOC"] - self._DOC_written) * to_mg, 0.)
+            DON = np.maximum(self.mimics.SON_available + (self.voxels["DON"] - self._DON_written) * to_mg, 0.)
             dissolved_mineral_N_previous = 1e3 * self.voxels["dissolved_mineral_N"] * dry_soil_mass / voxel_volume / 1e6 # gN.g-1 soil to mgN/cm3
 
             net_N_uptake = 1e3 * 3600 * (
@@ -1049,34 +1326,39 @@ class SoilModel(Model):
             net_N_uptake_pos = np.maximum(net_N_uptake, 0.)
             dissolved_mineral_N = dissolved_mineral_N_previous - np.minimum(net_N_uptake, 0.) # TODO, check if a negative uptake would be valid to the model input
 
-            # TODO Constant estimation here
-            baseline_litter_input = 1. # mgC.cm-3.y-1 about 300 g/m2/y for a 30 cm soil
-            litter_total_CN = 80.
-            lignin_in_mass = 0.2
-            C_in_mass = 0.45
-            N_in_mass = C_in_mass / litter_total_CN
-            mimics_lignin_N_ratio = lignin_in_mass / N_in_mass
-            fmet = 0.85 - 0.013 * mimics_lignin_N_ratio
-            litter_metabolic_CN = 15.
-            litter_struct_CN = (litter_total_CN - litter_metabolic_CN * fmet) / (1 - fmet)
+            # NOTE (uptake availability fix): the N debt of previous steps is requested from the voxel on top of the current root uptake.
+            # MIMICS then reports which part of this request could not be met (DIN_deficit) instead of silently clamping DIN to 0.
+            time_step_in_hours = self.time_step / 3600
+            debt_previous = 1e3 * self.voxels["mineralN_uptake_debt"] / voxel_volume / 1e6 # gN to mgN/cm3
+            requested_N_uptake = net_N_uptake_pos + debt_previous / time_step_in_hours # mgN/cm3/h
 
-            initial_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + DOC + (baseline_litter_input / (365 * 24)) ) * (1e6 * voxel_volume)
-            initial_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + DON + (baseline_litter_input / (litter_total_CN * 365 * 24)) ) * (1e6 * voxel_volume)
+            # Same depth-dependent residue inputs as for the MIMICS steady-state initialization
+            li = self._litter_inputs
+            hourly_C_input = (li["structural"] + li["metabolic"]) / (365 * 24)
+            hourly_N_input = (li["structural"] / li["structural_CN"] + li["metabolic"] / li["metabolic_CN"]) / (365 * 24)
+
+            initial_C = (self.mimics.Litter_DOC + self.mimics.Litter_POC + self.mimics.MBC_r + self.mimics.MBC_K + self.mimics.SOC_physical + self.mimics.SOC_chemical + DOC + hourly_C_input) * (1e6 * voxel_volume)
+            initial_SOM_N = (self.mimics.Litter_DON + self.mimics.Litter_PON + self.mimics.SON_physical + self.mimics.SON_chemical + DON + hourly_N_input) * (1e6 * voxel_volume)
 
             self.mimics(soil_temperature=soil_temperature,
                         labile_OC=DOC, # Expects mgC/cm3
                         labile_ON=DON,
                         labile_IN=dissolved_mineral_N,
-                        net_N_uptake=net_N_uptake_pos,
-                        litter_inputs=np.full_like(DOC, baseline_litter_input * (1 - fmet)),
-                        litter_CN=np.full_like(DOC, litter_struct_CN),
-                        rhizodeposits_inputs=np.full_like(DOC, baseline_litter_input * fmet),
-                        rhizodeposits_CN=np.full_like(DOC, litter_metabolic_CN))
+                        net_N_uptake=requested_N_uptake,
+                        litter_inputs=li["structural"],
+                        litter_CN=li["structural_CN"],
+                        rhizodeposits_inputs=li["metabolic"],
+                        rhizodeposits_CN=li["metabolic_CN"])
 
             concentrations_conversion = 1e6 * voxel_volume / dry_soil_mass / 1e3
             self.voxels["dissolved_mineral_N"] = self.mimics.DIN * concentrations_conversion
-            self.voxels["DOC"] = self.mimics.SOC_available * concentrations_conversion
-            self.voxels["DON"] = self.mimics.SON_available * concentrations_conversion
+            # Unmet part of the request, carried over to the next time step
+            self.voxels["mineralN_uptake_debt"] = self.mimics.DIN_deficit * (1e6 * voxel_volume) / 1e3 # mgN/cm3 to gN
+            # Mineral N actually withdrawn from the voxel by roots during this step (mgN/cm3)
+            root_N_withdrawn = requested_N_uptake * time_step_in_hours - self.mimics.DIN_deficit
+            self.voxels["DOC"] = self.DOM_dissolved_fraction * self.mimics.SOC_available * concentrations_conversion
+            self.voxels["DON"] = self.DOM_dissolved_fraction * self.mimics.SON_available * concentrations_conversion
+            self._DOC_written, self._DON_written = self.voxels["DOC"].copy(), self.voxels["DON"].copy()
             # TODO: log litter inputs if varying
             self.voxels["MAOC"] = self.mimics.SOC_physical * concentrations_conversion
             self.voxels["MAON"] = self.mimics.SON_physical * concentrations_conversion
@@ -1090,7 +1372,8 @@ class SoilModel(Model):
 
             self.voxels["microbial_respiration"] = (initial_C - final_C) / dry_soil_mass / 1e3 / 3600
             self.voxels["N_mineralization"] = (initial_SOM_N - final_SOM_N) / dry_soil_mass / 1e3 / 3600
-            self.voxels["microbial_N_uptake"] = (((dissolved_mineral_N - self.mimics.DIN - net_N_uptake_pos)  * (1e6 * voxel_volume)) + (initial_SOM_N - final_SOM_N)) / dry_soil_mass / 1e3 / 3600
+            # Uses the N actually withdrawn by roots: with the former clamp, unmet root demand appeared here as a negative microbial uptake
+            self.voxels["microbial_N_uptake"] = (((dissolved_mineral_N - self.mimics.DIN - root_N_withdrawn)  * (1e6 * voxel_volume)) + (initial_SOM_N - final_SOM_N)) / dry_soil_mass / 1e3 / self.time_step
 
         
 
@@ -1102,6 +1385,7 @@ class SoilModel(Model):
             field_capacity=0.31
 
             self.current_date += pd.Timedelta(days=1)
+            self.update_daily_evaporation()
             current_inputs = self.campbell_input_df.loc[self.campbell_input_df["DATE"] == self.current_date]
             sunrise = current_inputs["SUNUP"].iat[0]
             sunset = current_inputs["SUNDWN"].iat[0]
@@ -1223,8 +1507,10 @@ class SoilModel(Model):
                 + mineralN_diffusion_from_xylem
                 - mineralN_uptake
                 # + voxel_mineral_N_fertilization
-                )
+                ) - self.voxels["mineralN_uptake_debt"] / dry_soil_mass
             
+            # NOTE (uptake availability fix): same debt logic as in mimics_cn_states, instead of clamping the pool to 0 and creating N
+            self.voxels["mineralN_uptake_debt"] = np.maximum(-balance, 0.) * dry_soil_mass
             balance[balance < 0] = 0
 
             return balance
